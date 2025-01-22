@@ -9,6 +9,8 @@ import os
 import time
 import warnings
 import numpy as np
+from utils.dtw_metric import dtw, accelerated_dtw
+from utils.augmentation import run_augmentation, run_augmentation_single
 
 warnings.filterwarnings("ignore")
 
@@ -57,6 +59,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 return total_loss
 
         return custom_loss
+ 
 
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
@@ -81,26 +84,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 # encoder - decoder
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
-                        if self.args.output_attention:
-                            outputs = self.model(
-                                batch_x, batch_x_mark, dec_inp, batch_y_mark
-                            )[0]
-                        else:
-                            outputs = self.model(
-                                batch_x, batch_x_mark, dec_inp, batch_y_mark
-                            )
+                        outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                 else:
-                    if self.args.output_attention:
-                        outputs = self.model(
-                            batch_x, batch_x_mark, dec_inp, batch_y_mark
-                        )[0]
-                    else:
-                        outputs = self.model(
-                            batch_x, batch_x_mark, dec_inp, batch_y_mark
-                        )
-                f_dim = -1 if self.args.features == "MS" else 0
-                outputs = outputs[:, -self.args.pred_len :, f_dim:]
-                batch_y = batch_y[:, -self.args.pred_len :, f_dim:].to(self.device)
+                    outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                f_dim = -1 if self.args.features == 'MS' else 0
+                outputs = outputs[:, -self.args.pred_len:, f_dim:]
+                batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
 
                 pred = outputs.detach().cpu()
                 true = batch_y.detach().cpu()
@@ -144,7 +133,6 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 iter_count += 1
                 model_optim.zero_grad()
                 batch_x = batch_x.float().to(self.device)
-
                 batch_y = batch_y.float().to(self.device)
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
@@ -160,14 +148,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 # encoder - decoder
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
-                        if self.args.output_attention:
-                            outputs = self.model(
-                                batch_x, batch_x_mark, dec_inp, batch_y_mark
-                            )[0]
-                        else:
-                            outputs = self.model(
-                                batch_x, batch_x_mark, dec_inp, batch_y_mark
-                            )
+                        outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
                         f_dim = -1 if self.args.features == "MS" else 0
                         outputs = outputs[:, -self.args.pred_len :, f_dim:]
@@ -178,14 +159,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                         train_loss.append(loss.item())
                 else:
-                    if self.args.output_attention:
-                        outputs = self.model(
-                            batch_x, batch_x_mark, dec_inp, batch_y_mark
-                        )[0]
-                    else:
-                        outputs = self.model(
-                            batch_x, batch_x_mark, dec_inp, batch_y_mark
-                        )
+                    outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
                     f_dim = -1 if self.args.features == "MS" else 0
                     outputs = outputs[:, -self.args.pred_len :, f_dim:]
@@ -278,24 +252,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 # encoder - decoder
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
-                        if self.args.output_attention:
-                            outputs = self.model(
-                                batch_x, batch_x_mark, dec_inp, batch_y_mark
-                            )[0]
-                        else:
-                            outputs = self.model(
-                                batch_x, batch_x_mark, dec_inp, batch_y_mark
-                            )
+                        outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                 else:
-                    if self.args.output_attention:
-                        outputs = self.model(
-                            batch_x, batch_x_mark, dec_inp, batch_y_mark
-                        )[0]
-
-                    else:
-                        outputs = self.model(
-                            batch_x, batch_x_mark, dec_inp, batch_y_mark
-                        )
+                    outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
                 f_dim = -1 if self.args.features == "MS" else 0
                 outputs = outputs[:, -self.args.pred_len :, :]
@@ -303,13 +262,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 outputs = outputs.detach().cpu().numpy()
                 batch_y = batch_y.detach().cpu().numpy()
                 if test_data.scale and self.args.inverse:
-                    shape = outputs.shape
-                    outputs = test_data.inverse_transform(outputs.squeeze(0)).reshape(
-                        shape
-                    )
-                    batch_y = test_data.inverse_transform(batch_y.squeeze(0)).reshape(
-                        shape
-                    )
+                    shape = batch_y.shape
+                    if outputs.shape[-1] != batch_y.shape[-1]:
+                        outputs = np.tile(outputs, [1, 1, int(batch_y.shape[-1] / outputs.shape[-1])])
+                    outputs = test_data.inverse_transform(outputs.reshape(shape[0] * shape[1], -1)).reshape(shape)
+                    batch_y = test_data.inverse_transform(batch_y.reshape(shape[0] * shape[1], -1)).reshape(shape)
 
                 outputs = outputs[:, :, f_dim:]
                 batch_y = batch_y[:, :, f_dim:]
@@ -323,16 +280,14 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     input = batch_x.detach().cpu().numpy()
                     if test_data.scale and self.args.inverse:
                         shape = input.shape
-                        input = test_data.inverse_transform(input.squeeze(0)).reshape(
-                            shape
-                        )
+                        input = test_data.inverse_transform(input.reshape(shape[0] * shape[1], -1)).reshape(shape)
                     gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
                     visual(gt, pd, os.path.join(folder_path, str(i) + ".pdf"))
 
-        preds = np.array(preds)
-        trues = np.array(trues)
-        print("test shape:", preds.shape, trues.shape)
+        preds = np.concatenate(preds, axis=0)
+        trues = np.concatenate(trues, axis=0)
+        print('test shape:', preds.shape, trues.shape)
         preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
         trues = trues.reshape(-1, trues.shape[-2], trues.shape[-1])
         print("test shape:", preds.shape, trues.shape)
@@ -342,13 +297,28 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
 
+        # dtw calculation
+        if self.args.use_dtw:
+            dtw_list = []
+            manhattan_distance = lambda x, y: np.abs(x - y)
+            for i in range(preds.shape[0]):
+                x = preds[i].reshape(-1, 1)
+                y = trues[i].reshape(-1, 1)
+                if i % 100 == 0:
+                    print("calculating dtw iter:", i)
+                d, _, _, _ = accelerated_dtw(x, y, dist=manhattan_distance)
+                dtw_list.append(d)
+            dtw = np.array(dtw_list).mean()
+        else:
+            dtw = 'Not calculated'
+
         mae, mse, rmse, mape, mspe = metric(preds, trues)
-        print("mse:{}, mae:{}".format(mse, mae))
-        f = open("result_long_term_forecast.txt", "a")
+        print('mse:{}, mae:{}, dtw:{}'.format(mse, mae, dtw))
+        f = open("result_long_term_forecast.txt", 'a')
         f.write(setting + "  \n")
-        f.write("mse:{}, mae:{}".format(mse, mae))
-        f.write("\n")
-        f.write("\n")
+        f.write('mse:{}, mae:{}, dtw:{}'.format(mse, mae, dtw))
+        f.write('\n')
+        f.write('\n')
         f.close()
 
         np.save(folder_path + "metrics.npy", np.array([mae, mse, rmse, mape, mspe]))

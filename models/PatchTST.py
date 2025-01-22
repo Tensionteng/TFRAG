@@ -4,6 +4,14 @@ from layers.Transformer_EncDec import Encoder, EncoderLayer
 from layers.SelfAttention_Family import FullAttention, AttentionLayer
 from layers.Embed import PatchEmbedding
 
+class Transpose(nn.Module):
+    def __init__(self, *dims, contiguous=False): 
+        super().__init__()
+        self.dims, self.contiguous = dims, contiguous
+    def forward(self, x):
+        if self.contiguous: return x.transpose(*self.dims).contiguous()
+        else: return x.transpose(*self.dims)
+
 
 class FlattenHead(nn.Module):
     def __init__(self, n_vars, nf, target_window, head_dropout=0):
@@ -46,14 +54,14 @@ class Model(nn.Module):
                 EncoderLayer(
                     AttentionLayer(
                         FullAttention(False, configs.factor, attention_dropout=configs.dropout,
-                                      output_attention=configs.output_attention), configs.d_model, configs.n_heads),
+                                      output_attention=False), configs.d_model, configs.n_heads),
                     configs.d_model,
                     configs.d_ff,
                     dropout=configs.dropout,
                     activation=configs.activation
                 ) for l in range(configs.e_layers)
             ],
-            norm_layer=torch.nn.LayerNorm(configs.d_model)
+            norm_layer=nn.Sequential(Transpose(1,2), nn.BatchNorm1d(configs.d_model), Transpose(1,2))
         )
 
         # Prediction Head

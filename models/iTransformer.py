@@ -17,7 +17,6 @@ class Model(nn.Module):
         self.task_name = configs.task_name
         self.seq_len = configs.seq_len
         self.pred_len = configs.pred_len
-        self.output_attention = configs.output_attention
         # Embedding
         self.enc_embedding = DataEmbedding_inverted(
             configs.seq_len,
@@ -35,7 +34,7 @@ class Model(nn.Module):
                             False,
                             configs.factor,
                             attention_dropout=configs.dropout,
-                            output_attention=configs.output_attention,
+                            output_attention=False,
                         ),
                         configs.d_model,
                         configs.n_heads,

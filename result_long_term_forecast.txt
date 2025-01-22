@@ -22,3 +22,6 @@ mse:0.3969166576862335, mae:0.4114319384098053
 long_term_forecast_ETTh1_96_96_DLinear_ETTh1_ftM_sl96_ll48_pl96_dm512_nh8_el2_dl1_df2048_fc3_ebtimeF_dtTrue_Exp_0_mean_0.0_0.0  
 mse:0.4728779196739197, mae:0.45567718148231506
 
+long_term_forecast_ETTh1_96_96_DLinear_ETTh1_ftM_sl96_ll48_pl96_dm512_nh8_el2_dl1_df2048_expand2_dc4_fc3_ebtimeF_dtTrue_Exp_0_mean_0.0_0.0  
+mse:0.4734073579311371, mae:0.45595791935920715, dtw:Not calculated
+
