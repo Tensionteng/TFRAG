@@ -149,7 +149,9 @@ class Exp_Short_Term_Forecast(Exp_Basic):
             f_dim = -1 if self.args.features == 'MS' else 0
             outputs = outputs[:, -self.args.pred_len:, f_dim:]
             pred = outputs
-            true = torch.from_numpy(np.array(y))
+            y_np = np.array(y, dtype=np.float32)
+            # true = torch.from_numpy(np.array(y))
+            true = torch.from_numpy(y_np)
             batch_y_mark = torch.ones(true.shape)
 
             loss = criterion(x.detach().cpu()[:, :, 0], self.args.frequency_map, pred[:, :, 0], true, batch_y_mark)

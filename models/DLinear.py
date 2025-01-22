@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from layers.Autoformer_EncDec import series_decomp
+from models.Memory import MemoryBankWithRetrieval
 
 
 class Model(nn.Module):
@@ -24,6 +25,12 @@ class Model(nn.Module):
         self.decompsition = series_decomp(configs.moving_avg)
         self.individual = individual
         self.channels = configs.enc_in
+        self.fusion_mode = configs.fusion_mode
+        self.trend_loss_weight = configs.w_trend
+        self.frequency_loss_weight = configs.w_frequency
+        self.memory_bank = MemoryBankWithRetrieval(
+            seq_len=configs.pred_len, feature_dim=configs.d_model, use_gpu=True
+        )
 
         if self.individual:
             self.Linear_Seasonal = nn.ModuleList()
@@ -72,7 +79,20 @@ class Model(nn.Module):
             seasonal_output = self.Linear_Seasonal(seasonal_init)
             trend_output = self.Linear_Trend(trend_init)
         x = seasonal_output + trend_output
-        return x.permute(0, 2, 1)
+
+        x = x.permute(0, 2, 1)
+        # Update memory bank with current prediction
+        self.memory_bank.update(x.detach())
+
+        # RAG: Retrieve similar sequences
+        similar_seqs = self.memory_bank.retrieve_similar(x, k=5)
+
+        # Fuse sequences
+        fused_seq = self.memory_bank.fuse_sequences(
+            x, similar_seqs, fusion_mode=self.fusion_mode
+        )
+
+        return fused_seq
 
     def forecast(self, x_enc):
         # Encoder
