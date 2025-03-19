@@ -15,10 +15,10 @@
                 "--task_name", "long_term_forecast",
                 "--is_training", "1",
                 "--root_path", "./dataset/all_datasets/ETT-small",
-                "--data_path", "ETTh2.csv",
+                "--data_path", "ETTh1.csv",
                 "--model_id", "ETTh2_96_96",
-                "--model", "TFRAG",
-                "--data", "ETTh2",
+                "--model", "iTransformer",
+                "--data", "ETTh1",
                 "--features", "M",
                 "--seq_len", "96",
                 "--label_len", "48",
@@ -34,8 +34,11 @@
                 "--d_ff", "128",
                 "--itr", "1",
                 "--fusion_mode", "mean",
-                "--w_trend", "0.25",
-                "--w_frequency", "0.25",
+                "--w_trend", "0.1",
+                "--w_frequency", "0.1",
+                "--lradj", "type1",
+                "--patience", "5",
+                "--use_rag"
             ]
         }
     ]

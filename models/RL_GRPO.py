@@ -1,6 +1,5 @@
 from data_provider.data_factory import data_provider
 from exp.exp_basic import Exp_Basic
-from models.Memory import MemoryBankWithRetrieval
 from utils.tools import EarlyStopping, adjust_learning_rate, visual
 from utils.metrics import metric
 import torch
@@ -12,8 +11,6 @@ import warnings
 import numpy as np
 from utils.dtw_metric import dtw, accelerated_dtw
 from utils.augmentation import run_augmentation, run_augmentation_single
-from datetime import datetime
-from layers.Autoformer_EncDec import series_decomp
 
 warnings.filterwarnings("ignore")
 
@@ -21,16 +18,6 @@ warnings.filterwarnings("ignore")
 class Exp_Long_Term_Forecast(Exp_Basic):
     def __init__(self, args):
         super(Exp_Long_Term_Forecast, self).__init__(args)
-        if args.use_rag:
-            self.memory_bank = MemoryBankWithRetrieval(
-                seq_len=args.seq_len,
-                dim=args.enc_in,
-                pred_len=args.pred_len,
-                use_gpu=True,
-                gpu_index=1,
-            )
-            self.num_retrieve = args.num_retrieve
-            self.old_model = self.model
 
     def _build_model(self):
         model = self.model_dict[self.args.model].Model(self.args).float()
@@ -48,19 +35,23 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         return model_optim
 
     def _select_criterion(self):
+        # if not self.args.use_rag:
+        #     return nn.MSELoss()
+        # else:
+        #     return self._rag_loss
         return nn.MSELoss()
 
     def _rag_loss(self, pred, y_true, trend_weight=0.1, freq_weight=0.1):
         # 原始 MSE 损失
         mse = nn.MSELoss()(pred, y_true)
         # 从 memory_bank 中检索相似序列
-        similar_seqs = self.memory_bank.get_similar_seqs()
+        similar_seqs = self.model.get_similar_seqs()
 
         # 计算趋势损失
-        trend_loss = self.memory_bank.compute_trend_loss(pred, similar_seqs)
+        trend_loss = self.model.memory_bank.compute_trend_loss(pred, similar_seqs)
 
         # 计算频率损失
-        freq_loss = self.memory_bank.compute_frequency_loss(pred, similar_seqs)
+        freq_loss = self.model.memory_bank.compute_frequency_loss(pred, similar_seqs)
 
         # 总损失
         total_loss = mse + trend_weight * trend_loss + freq_weight * freq_loss
@@ -109,7 +100,6 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         return total_loss
 
     def train(self, setting):
-
         train_data, train_loader = self._get_data(flag="train")
         vali_data, vali_loader = self._get_data(flag="val")
         test_data, test_loader = self._get_data(flag="test")
@@ -184,84 +174,60 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     loss = criterion(outputs, batch_y)
 
                     if self.args.use_rag:
-                        old_outputs = self.old_model(
-                            batch_x, batch_x_mark, dec_inp, batch_y_mark
-                        )
-                        old_loss = criterion(old_outputs, batch_y)
-                        similar_seqs, similar_seqs_mark_x, similar_seqs_gt = (
-                            self.memory_bank.retrieve_similar(
+                        similar_seqs, similar_seqs_gt = (
+                            self.model.memory_bank.retrieve_similar(
                                 batch_x,
                                 k=5,
                             )
                         )
 
-                        self.memory_bank.update(
-                            batch_x.detach(), batch_x_mark.detach(), batch_y.detach()
+                        self.model.memory_bank.update(
+                            batch_x.detach(), batch_y.detach()
                         )
 
                         # if not query
-                        if (
-                            similar_seqs is not None
-                            and similar_seqs_gt is not None
-                            and similar_seqs_mark_x is not None
-                        ):
+                        if similar_seqs is not None and similar_seqs_gt is not None:
+
                             batch_size, k, seq_len, dim = similar_seqs.size()
-                            _, _, pred_len, _ = similar_seqs_gt.size()
-                            _, _, _, x_mark_dim = similar_seqs_mark_x.size()
+                            _, _, pred_len, _ = similar_seqs.size()
 
                             predictions = self.model(
                                 similar_seqs.view(-1, seq_len, dim),
-                                similar_seqs_mark_x.view(-1, seq_len, x_mark_dim),
+                                batch_x_mark,
                                 dec_inp,
                                 batch_y_mark,
                             )
                             predictions = predictions.view(batch_size, k, pred_len, dim)
 
-                            diff_y_y_mae = torch.mean(
-                                torch.abs(predictions - outputs.unsqueeze(1)),
-                                dim=(2, 3),
-                            )
-                            diff_y_y_mse = torch.mean(
-                                (predictions - outputs.unsqueeze(1)) ** 2, dim=(2, 3)
-                            )
-                            diff_y_gt_mae = torch.mean(
-                                torch.abs(predictions - similar_seqs_gt), dim=(2, 3)
-                            )
-                            diff_y_gt_mse = torch.mean(
-                                (predictions - similar_seqs_gt) ** 2, dim=(2, 3)
-                            )
+                            rewards = []
+                            # 计算每个预测的奖励（1 / MSE）
+                            for pred, pred_gt in zip(
+                                predictions.permute(1, 0, 2, 3),
+                                similar_seqs_gt.permute(1, 0, 2, 3),
+                            ):
+                                mse = nn.MSELoss()
+                                reward = mse(pred, pred_gt)
+                                rewards.append(1.0 / reward)
 
-                            score = torch.exp(-1.0 * diff_y_y_mse - diff_y_gt_mse)
-                            # score = torch.exp( -1.0 * diff_y_gt_mse)
-                            weights = torch.softmax(score, dim=1)
+                            rewards.append(1.0 / loss)
+                            rewards = torch.stack(rewards, dim=0)
 
-                            weighted_pred = torch.sum(
-                                similar_seqs_gt
-                                * weights.unsqueeze(-1).unsqueeze(-1),  # [bs, k, 1, 1]
-                                dim=1,
-                            )
+                            # 计算优势
+                            std, mean = torch.std_mean(rewards)
+                            sigma = 1e-5
+                            advantages = (rewards - mean) / (std + sigma)
 
-                            # confidence = torch.exp(
-                            #     -torch.mean(diff_y_y_mae) - torch.mean(diff_y_gt_mae)
+                            # 结合原始 MSE 损失和 GRPO 损失
+                            epsilon = 0.3
+                            # loss = torch.min(
+                            #     x_reward * advantages[-1],
+                            #     torch.clamp(advantages[-1], 1 - epsilon, 1 + epsilon)
+                            #     * advantages[-1],
                             # )
-
-                            alpha = 0.5
-                            # weighted_pred = torch.mean(similar_seqs_gt, dim=1)
-                            final_output = alpha * outputs + (1 - alpha) * weighted_pred
-
-                            # output_max = torch.max(outputs, dim=1)[0]
-                            # output_min = torch.min(outputs, dim=1)[0]
-                            # gt_max = torch.max(batch_y, dim=1)[0]
-                            # gt_min = torch.min(batch_y, dim=1)[0]
-                            # diff = torch.abs(
-                            #     (gt_max - gt_min) - (output_max - output_min)
-                            # )
-                            # diff = torch.mean(diff)
-
-                            loss = criterion(final_output, batch_y)
-
+                            loss = loss * torch.clamp(advantages[-1], 1 - epsilon, 1 + epsilon)
+                    
                     train_loss.append(loss.item())
-
+                    
                 if (i + 1) % 100 == 0:
                     print(
                         "\titers: {0}, epoch: {1} | loss: {2:.7f}".format(
@@ -280,7 +246,6 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     iter_count = 0
                     time_now = time.time()
 
-                self.old_model = self.model
                 if self.args.use_amp:
                     scaler.scale(loss).backward()
                     scaler.step(model_optim)
@@ -307,7 +272,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             adjust_learning_rate(model_optim, epoch + 1, self.args)
             # 第一个epoch之后，所有数据都已经储存好了，不需要再更新
             if self.args.use_rag:
-                self.memory_bank.finish()
+                print("Memory is all updated")
+                self.model.memory_bank.finish()
 
         best_model_path = path + "/" + "checkpoint.pth"
         self.model.load_state_dict(torch.load(best_model_path))
@@ -315,11 +281,6 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         return self.model
 
     def test(self, setting, test=0):
-
-        folder_path = os.path.join("./test_results", setting)
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path, exist_ok=True)
-
         test_data, test_loader = self._get_data(flag="test")
         if test:
             print("loading model")
@@ -329,6 +290,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
         preds = []
         trues = []
+        folder_path = "./test_results/" + setting + "/"
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
 
         self.model.eval()
         with torch.no_grad():
@@ -392,7 +356,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         ).reshape(shape)
                     gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
-                    visual(gt, pd, os.path.join(folder_path, str(i) + ".png"))
+                    visual(gt, pd, os.path.join(folder_path, str(i) + ".pdf"))
 
         preds = np.concatenate(preds, axis=0)
         trues = np.concatenate(trues, axis=0)
@@ -402,9 +366,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         print("test shape:", preds.shape, trues.shape)
 
         # result save
-        folder_path = os.path.join("./results", setting + "/")
+        folder_path = "./results/" + setting + "/"
         if not os.path.exists(folder_path):
-            os.makedirs(folder_path, exist_ok=True)
+            os.makedirs(folder_path)
 
         # dtw calculation
         if self.args.use_dtw:

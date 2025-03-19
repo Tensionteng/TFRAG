@@ -96,38 +96,79 @@ if __name__ == "__main__":
     )
 
     # model define
-    parser.add_argument('--expand', type=int, default=2, help='expansion factor for Mamba')
-    parser.add_argument('--d_conv', type=int, default=4, help='conv kernel size for Mamba')
-    parser.add_argument('--top_k', type=int, default=5, help='for TimesBlock')
-    parser.add_argument('--num_kernels', type=int, default=6, help='for Inception')
-    parser.add_argument('--enc_in', type=int, default=7, help='encoder input size')
-    parser.add_argument('--dec_in', type=int, default=7, help='decoder input size')
-    parser.add_argument('--c_out', type=int, default=7, help='output size')
-    parser.add_argument('--d_model', type=int, default=512, help='dimension of model')
-    parser.add_argument('--n_heads', type=int, default=8, help='num of heads')
-    parser.add_argument('--e_layers', type=int, default=2, help='num of encoder layers')
-    parser.add_argument('--d_layers', type=int, default=1, help='num of decoder layers')
-    parser.add_argument('--d_ff', type=int, default=2048, help='dimension of fcn')
-    parser.add_argument('--moving_avg', type=int, default=25, help='window size of moving average')
-    parser.add_argument('--factor', type=int, default=1, help='attn factor')
-    parser.add_argument('--distil', action='store_false',
-                        help='whether to use distilling in encoder, using this argument means not using distilling',
-                        default=True)
-    parser.add_argument('--dropout', type=float, default=0.1, help='dropout')
-    parser.add_argument('--embed', type=str, default='timeF',
-                        help='time features encoding, options:[timeF, fixed, learned]')
-    parser.add_argument('--activation', type=str, default='gelu', help='activation')
-    parser.add_argument('--channel_independence', type=int, default=1,
-                        help='0: channel dependence 1: channel independence for FreTS model')
-    parser.add_argument('--decomp_method', type=str, default='moving_avg',
-                        help='method of series decompsition, only support moving_avg or dft_decomp')
-    parser.add_argument('--use_norm', type=int, default=1, help='whether to use normalize; True 1 False 0')
-    parser.add_argument('--down_sampling_layers', type=int, default=0, help='num of down sampling layers')
-    parser.add_argument('--down_sampling_window', type=int, default=1, help='down sampling window size')
-    parser.add_argument('--down_sampling_method', type=str, default=None,
-                        help='down sampling method, only support avg, max, conv')
-    parser.add_argument('--seg_len', type=int, default=96,
-                        help='the length of segmen-wise iteration of SegRNN')
+    parser.add_argument(
+        "--expand", type=int, default=2, help="expansion factor for Mamba"
+    )
+    parser.add_argument(
+        "--d_conv", type=int, default=4, help="conv kernel size for Mamba"
+    )
+    parser.add_argument("--top_k", type=int, default=5, help="for TimesBlock")
+    parser.add_argument("--num_kernels", type=int, default=6, help="for Inception")
+    parser.add_argument("--enc_in", type=int, default=7, help="encoder input size")
+    parser.add_argument("--dec_in", type=int, default=7, help="decoder input size")
+    parser.add_argument("--c_out", type=int, default=7, help="output size")
+    parser.add_argument("--d_model", type=int, default=512, help="dimension of model")
+    parser.add_argument("--n_heads", type=int, default=8, help="num of heads")
+    parser.add_argument("--e_layers", type=int, default=2, help="num of encoder layers")
+    parser.add_argument("--d_layers", type=int, default=1, help="num of decoder layers")
+    parser.add_argument("--d_ff", type=int, default=2048, help="dimension of fcn")
+    parser.add_argument(
+        "--moving_avg", type=int, default=25, help="window size of moving average"
+    )
+    parser.add_argument("--factor", type=int, default=1, help="attn factor")
+    parser.add_argument(
+        "--distil",
+        action="store_false",
+        help="whether to use distilling in encoder, using this argument means not using distilling",
+        default=True,
+    )
+    parser.add_argument("--dropout", type=float, default=0.1, help="dropout")
+    parser.add_argument(
+        "--embed",
+        type=str,
+        default="timeF",
+        help="time features encoding, options:[timeF, fixed, learned]",
+    )
+    parser.add_argument("--activation", type=str, default="gelu", help="activation")
+    parser.add_argument(
+        "--channel_independence",
+        type=int,
+        default=1,
+        help="0: channel dependence 1: channel independence for FreTS model",
+    )
+    parser.add_argument(
+        "--decomp_method",
+        type=str,
+        default="moving_avg",
+        help="method of series decompsition, only support moving_avg or dft_decomp",
+    )
+    parser.add_argument(
+        "--use_norm",
+        type=int,
+        default=1,
+        help="whether to use normalize; True 1 False 0",
+    )
+    parser.add_argument(
+        "--down_sampling_layers",
+        type=int,
+        default=0,
+        help="num of down sampling layers",
+    )
+    parser.add_argument(
+        "--down_sampling_window", type=int, default=1, help="down sampling window size"
+    )
+    parser.add_argument(
+        "--down_sampling_method",
+        type=str,
+        default=None,
+        help="down sampling method, only support avg, max, conv",
+    )
+    parser.add_argument(
+        "--seg_len",
+        type=int,
+        default=96,
+        help="the length of segmen-wise iteration of SegRNN",
+    )
 
     # optimization
     parser.add_argument(
@@ -159,7 +200,9 @@ if __name__ == "__main__":
     # GPU
     parser.add_argument("--use_gpu", type=bool, default=True, help="use gpu")
     parser.add_argument("--gpu", type=int, default=0, help="gpu")
-    parser.add_argument('--gpu_type', type=str, default='cuda', help='gpu type')  # cuda or mps
+    parser.add_argument(
+        "--gpu_type", type=str, default="cuda", help="gpu type"
+    )  # cuda or mps
     parser.add_argument(
         "--use_multi_gpu", action="store_true", help="use multiple gpus", default=False
     )
@@ -183,35 +226,112 @@ if __name__ == "__main__":
     )
 
     # metrics (dtw)
-    parser.add_argument('--use_dtw', type=bool, default=False,
-                        help='the controller of using dtw metric (dtw is time consuming, not suggested unless necessary)')
+    parser.add_argument(
+        "--use_dtw",
+        type=bool,
+        default=False,
+        help="the controller of using dtw metric (dtw is time consuming, not suggested unless necessary)",
+    )
 
     # Augmentation
-    parser.add_argument('--augmentation_ratio', type=int, default=0, help="How many times to augment")
-    parser.add_argument('--seed', type=int, default=2, help="Randomization seed")
-    parser.add_argument('--jitter', default=False, action="store_true", help="Jitter preset augmentation")
-    parser.add_argument('--scaling', default=False, action="store_true", help="Scaling preset augmentation")
-    parser.add_argument('--permutation', default=False, action="store_true",
-                        help="Equal Length Permutation preset augmentation")
-    parser.add_argument('--randompermutation', default=False, action="store_true",
-                        help="Random Length Permutation preset augmentation")
-    parser.add_argument('--magwarp', default=False, action="store_true", help="Magnitude warp preset augmentation")
-    parser.add_argument('--timewarp', default=False, action="store_true", help="Time warp preset augmentation")
-    parser.add_argument('--windowslice', default=False, action="store_true", help="Window slice preset augmentation")
-    parser.add_argument('--windowwarp', default=False, action="store_true", help="Window warp preset augmentation")
-    parser.add_argument('--rotation', default=False, action="store_true", help="Rotation preset augmentation")
-    parser.add_argument('--spawner', default=False, action="store_true", help="SPAWNER preset augmentation")
-    parser.add_argument('--dtwwarp', default=False, action="store_true", help="DTW warp preset augmentation")
-    parser.add_argument('--shapedtwwarp', default=False, action="store_true", help="Shape DTW warp preset augmentation")
-    parser.add_argument('--wdba', default=False, action="store_true", help="Weighted DBA preset augmentation")
-    parser.add_argument('--discdtw', default=False, action="store_true",
-                        help="Discrimitive DTW warp preset augmentation")
-    parser.add_argument('--discsdtw', default=False, action="store_true",
-                        help="Discrimitive shapeDTW warp preset augmentation")
-    parser.add_argument('--extra_tag', type=str, default="", help="Anything extra")
+    parser.add_argument(
+        "--augmentation_ratio", type=int, default=0, help="How many times to augment"
+    )
+    parser.add_argument("--seed", type=int, default=2, help="Randomization seed")
+    parser.add_argument(
+        "--jitter",
+        default=False,
+        action="store_true",
+        help="Jitter preset augmentation",
+    )
+    parser.add_argument(
+        "--scaling",
+        default=False,
+        action="store_true",
+        help="Scaling preset augmentation",
+    )
+    parser.add_argument(
+        "--permutation",
+        default=False,
+        action="store_true",
+        help="Equal Length Permutation preset augmentation",
+    )
+    parser.add_argument(
+        "--randompermutation",
+        default=False,
+        action="store_true",
+        help="Random Length Permutation preset augmentation",
+    )
+    parser.add_argument(
+        "--magwarp",
+        default=False,
+        action="store_true",
+        help="Magnitude warp preset augmentation",
+    )
+    parser.add_argument(
+        "--timewarp",
+        default=False,
+        action="store_true",
+        help="Time warp preset augmentation",
+    )
+    parser.add_argument(
+        "--windowslice",
+        default=False,
+        action="store_true",
+        help="Window slice preset augmentation",
+    )
+    parser.add_argument(
+        "--windowwarp",
+        default=False,
+        action="store_true",
+        help="Window warp preset augmentation",
+    )
+    parser.add_argument(
+        "--rotation",
+        default=False,
+        action="store_true",
+        help="Rotation preset augmentation",
+    )
+    parser.add_argument(
+        "--spawner",
+        default=False,
+        action="store_true",
+        help="SPAWNER preset augmentation",
+    )
+    parser.add_argument(
+        "--dtwwarp",
+        default=False,
+        action="store_true",
+        help="DTW warp preset augmentation",
+    )
+    parser.add_argument(
+        "--shapedtwwarp",
+        default=False,
+        action="store_true",
+        help="Shape DTW warp preset augmentation",
+    )
+    parser.add_argument(
+        "--wdba",
+        default=False,
+        action="store_true",
+        help="Weighted DBA preset augmentation",
+    )
+    parser.add_argument(
+        "--discdtw",
+        default=False,
+        action="store_true",
+        help="Discrimitive DTW warp preset augmentation",
+    )
+    parser.add_argument(
+        "--discsdtw",
+        default=False,
+        action="store_true",
+        help="Discrimitive shapeDTW warp preset augmentation",
+    )
+    parser.add_argument("--extra_tag", type=str, default="", help="Anything extra")
 
     # TimeXer
-    parser.add_argument('--patch_len', type=int, default=16, help='patch length')
+    parser.add_argument("--patch_len", type=int, default=16, help="patch length")
     # RAG
     parser.add_argument(
         "--fusion_mode", help="fusion mode of RAG, mean or mlp", default="mean"
@@ -220,17 +340,25 @@ if __name__ == "__main__":
     parser.add_argument(
         "--w_frequency", type=float, help="weight of frequency", default=0.25
     )
+    parser.add_argument("--use_rag", action="store_true", help="whether use rag", default=False)
+    parser.add_argument(
+        "--num_retrieve", type=int, help="number of retrieve", default=5
+    )
 
     args = parser.parse_args()
     if torch.cuda.is_available() and args.use_gpu:
-        args.device = torch.device('cuda:{}'.format(args.gpu))
-        print('Using GPU')
+        args.device = torch.device("cuda:{}".format(args.gpu))
+        print("Using GPU")
     else:
         if hasattr(torch.backends, "mps"):
-            args.device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
+            args.device = (
+                torch.device("mps")
+                if torch.backends.mps.is_available()
+                else torch.device("cpu")
+            )
         else:
             args.device = torch.device("cpu")
-        print('Using cpu or mps')
+        print("Using cpu or mps")
 
     if args.use_gpu and args.use_multi_gpu:
         args.devices = args.devices.replace(" ", "")
@@ -258,7 +386,7 @@ if __name__ == "__main__":
         for ii in range(args.itr):
             # setting record of experiments
             exp = Exp(args)  # set experiments
-            setting = "{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_expand{}_dc{}_fc{}_eb{}_dt{}_{}_{}_{}_{}_{}".format(
+            setting = "{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_expand{}_dc{}_fc{}_eb{}_dt{}_{}_{}_fm{}".format(
                 args.task_name,
                 args.model_id,
                 args.model,
@@ -279,9 +407,7 @@ if __name__ == "__main__":
                 args.distil,
                 args.des,
                 ii,
-                args.fusion_mode,
-                args.w_trend,
-                args.w_frequency,
+                "_rag" if args.use_rag else "",
             )
 
             print(
@@ -293,9 +419,9 @@ if __name__ == "__main__":
                 ">>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<".format(setting)
             )
             exp.test(setting)
-            if args.gpu_type == 'mps':
+            if args.gpu_type == "mps":
                 torch.backends.mps.empty_cache()
-            elif args.gpu_type == 'cuda':
+            elif args.gpu_type == "cuda":
                 torch.cuda.empty_cache()
     else:
         exp = Exp(args)  # set experiments
@@ -328,7 +454,7 @@ if __name__ == "__main__":
 
         print(">>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<".format(setting))
         exp.test(setting, test=1)
-        if args.gpu_type == 'mps':
+        if args.gpu_type == "mps":
             torch.backends.mps.empty_cache()
-        elif args.gpu_type == 'cuda':
+        elif args.gpu_type == "cuda":
             torch.cuda.empty_cache()

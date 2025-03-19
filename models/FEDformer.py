@@ -11,7 +11,7 @@ from layers.Autoformer_EncDec import Encoder, Decoder, EncoderLayer, DecoderLaye
 class Model(nn.Module):
     """
     FEDformer performs the attention mechanism on frequency domain and achieved O(N) complexity
-    Paper link: https://proceedings.mlr.press/v162/zhou22g.html
+    Paper link: https://proceedings.mlr.press/v162/zhou22g.htmle
     """
 
     def __init__(self, configs, version='fourier', mode_select='random', modes=32):

@@ -26,4 +26,5 @@ python -u run.py \
   --itr 1 \
   --fusion_mode 'mean' \
   --w_trend 0 \
-  --w_frequency 0
+  --w_frequency 0 \
+  --lradj 'type4'

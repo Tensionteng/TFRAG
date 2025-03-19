@@ -13,11 +13,8 @@ class Model(nn.Module):
         self.task_name = configs.task_name
         self.seq_len = configs.seq_len
         self.pred_len = configs.pred_len
-        self.output_attention = configs.output_attention
         self.fusion_mode = configs.fusion_mode
-        self.trend_loss_weight = configs.w_trend
-        self.frequency_loss_weight = configs.w_frequency
-
+        
         # Embedding
         self.enc_embedding = DataEmbedding_inverted(
             configs.seq_len,
@@ -26,7 +23,6 @@ class Model(nn.Module):
             configs.freq,
             configs.dropout,
         )
-
         # Encoder
         self.encoder = Encoder(
             [
@@ -36,7 +32,7 @@ class Model(nn.Module):
                             False,
                             configs.factor,
                             attention_dropout=configs.dropout,
-                            output_attention=configs.output_attention,
+                            output_attention=False,
                         ),
                         configs.d_model,
                         configs.n_heads,
@@ -46,7 +42,7 @@ class Model(nn.Module):
                     dropout=configs.dropout,
                     activation=configs.activation,
                 )
-                for _ in range(configs.e_layers)
+                for l in range(configs.e_layers)
             ],
             norm_layer=torch.nn.LayerNorm(configs.d_model),
         )

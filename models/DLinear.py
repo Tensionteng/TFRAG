@@ -17,7 +17,11 @@ class Model(nn.Module):
         super(Model, self).__init__()
         self.task_name = configs.task_name
         self.seq_len = configs.seq_len
-        if self.task_name == 'classification' or self.task_name == 'anomaly_detection' or self.task_name == 'imputation':
+        if (
+            self.task_name == "classification"
+            or self.task_name == "anomaly_detection"
+            or self.task_name == "imputation"
+        ):
             self.pred_len = configs.seq_len
         else:
             self.pred_len = configs.pred_len
@@ -25,72 +29,69 @@ class Model(nn.Module):
         self.decompsition = series_decomp(configs.moving_avg)
         self.individual = individual
         self.channels = configs.enc_in
-        self.fusion_mode = configs.fusion_mode
-        self.trend_loss_weight = configs.w_trend
-        self.frequency_loss_weight = configs.w_frequency
-        self.memory_bank = MemoryBankWithRetrieval(
-            seq_len=configs.pred_len, feature_dim=configs.d_model, use_gpu=True
-        )
 
         if self.individual:
             self.Linear_Seasonal = nn.ModuleList()
             self.Linear_Trend = nn.ModuleList()
 
             for i in range(self.channels):
-                self.Linear_Seasonal.append(
-                    nn.Linear(self.seq_len, self.pred_len))
-                self.Linear_Trend.append(
-                    nn.Linear(self.seq_len, self.pred_len))
+                self.Linear_Seasonal.append(nn.Linear(self.seq_len, self.pred_len))
+                self.Linear_Trend.append(nn.Linear(self.seq_len, self.pred_len))
 
                 self.Linear_Seasonal[i].weight = nn.Parameter(
-                    (1 / self.seq_len) * torch.ones([self.pred_len, self.seq_len]))
+                    (1 / self.seq_len) * torch.ones([self.pred_len, self.seq_len])
+                )
                 self.Linear_Trend[i].weight = nn.Parameter(
-                    (1 / self.seq_len) * torch.ones([self.pred_len, self.seq_len]))
+                    (1 / self.seq_len) * torch.ones([self.pred_len, self.seq_len])
+                )
         else:
             self.Linear_Seasonal = nn.Linear(self.seq_len, self.pred_len)
             self.Linear_Trend = nn.Linear(self.seq_len, self.pred_len)
+            self.reward_seasonal = nn.Linear(self.seq_len, 1)
+            self.reward_trend = nn.Linear(self.seq_len, 1)
 
             self.Linear_Seasonal.weight = nn.Parameter(
-                (1 / self.seq_len) * torch.ones([self.pred_len, self.seq_len]))
+                (1 / self.seq_len) * torch.ones([self.pred_len, self.seq_len])
+            )
             self.Linear_Trend.weight = nn.Parameter(
-                (1 / self.seq_len) * torch.ones([self.pred_len, self.seq_len]))
+                (1 / self.seq_len) * torch.ones([self.pred_len, self.seq_len])
+            )
 
-        if self.task_name == 'classification':
+        if self.task_name == "classification":
             self.projection = nn.Linear(
-                configs.enc_in * configs.seq_len, configs.num_class)
+                configs.enc_in * configs.seq_len, configs.num_class
+            )
 
     def encoder(self, x):
+        # x batch_size, seq_len, dim
         seasonal_init, trend_init = self.decompsition(x)
-        seasonal_init, trend_init = seasonal_init.permute(
-            0, 2, 1), trend_init.permute(0, 2, 1)
+        seasonal_init, trend_init = seasonal_init.permute(0, 2, 1), trend_init.permute(
+            0, 2, 1
+        )
         if self.individual:
-            seasonal_output = torch.zeros([seasonal_init.size(0), seasonal_init.size(1), self.pred_len],
-                                          dtype=seasonal_init.dtype).to(seasonal_init.device)
-            trend_output = torch.zeros([trend_init.size(0), trend_init.size(1), self.pred_len],
-                                       dtype=trend_init.dtype).to(trend_init.device)
+            seasonal_output = torch.zeros(
+                [seasonal_init.size(0), seasonal_init.size(1), self.pred_len],
+                dtype=seasonal_init.dtype,
+            ).to(seasonal_init.device)
+            trend_output = torch.zeros(
+                [trend_init.size(0), trend_init.size(1), self.pred_len],
+                dtype=trend_init.dtype,
+            ).to(trend_init.device)
             for i in range(self.channels):
                 seasonal_output[:, i, :] = self.Linear_Seasonal[i](
-                    seasonal_init[:, i, :])
-                trend_output[:, i, :] = self.Linear_Trend[i](
-                    trend_init[:, i, :])
+                    seasonal_init[:, i, :]
+                )
+                trend_output[:, i, :] = self.Linear_Trend[i](trend_init[:, i, :])
         else:
             seasonal_output = self.Linear_Seasonal(seasonal_init)
             trend_output = self.Linear_Trend(trend_init)
+            r_seasonal = self.reward_seasonal(seasonal_init)
+            r_trend = self.reward_trend(trend_init)
         x = seasonal_output + trend_output
-
+        reward = r_seasonal + r_trend
         x = x.permute(0, 2, 1)
-        # Update memory bank with current prediction
-        self.memory_bank.update(x.detach())
 
-        # RAG: Retrieve similar sequences
-        similar_seqs = self.memory_bank.retrieve_similar(x, k=5)
-
-        # Fuse sequences
-        fused_seq = self.memory_bank.fuse_sequences(
-            x, similar_seqs, fusion_mode=self.fusion_mode
-        )
-
-        return fused_seq
+        return x
 
     def forecast(self, x_enc):
         # Encoder
@@ -115,16 +116,20 @@ class Model(nn.Module):
         return output
 
     def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
-        if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
+        if (
+            self.task_name == "long_term_forecast"
+            or self.task_name == "short_term_forecast"
+        ):
             dec_out = self.forecast(x_enc)
-            return dec_out[:, -self.pred_len:, :]  # [B, L, D]
-        if self.task_name == 'imputation':
+            return dec_out[:, -self.pred_len :, :]  # [B, L, D]
+        if self.task_name == "imputation":
             dec_out = self.imputation(x_enc)
             return dec_out  # [B, L, D]
-        if self.task_name == 'anomaly_detection':
+        if self.task_name == "anomaly_detection":
             dec_out = self.anomaly_detection(x_enc)
             return dec_out  # [B, L, D]
-        if self.task_name == 'classification':
+        if self.task_name == "classification":
             dec_out = self.classification(x_enc)
             return dec_out  # [B, N]
         return None
+
