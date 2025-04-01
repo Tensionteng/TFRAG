@@ -6,7 +6,7 @@ import numpy as np
 
 
 class MemoryBankWithRetrieval:
-    def __init__(self, seq_len, dim, pred_len=None, use_gpu=False, gpu_index=0):
+    def __init__(self, window_size, dim, pred_len, use_gpu=False, gpu_index=0):
         """
         Initialize a memory bank to store and retrieve feature vectors using FAISS.
 
@@ -17,21 +17,15 @@ class MemoryBankWithRetrieval:
             use_gpu (bool): Whether to use GPU for FAISS.
             gpu_index (int): GPU device index to use.
         """
-        self.seq_len = seq_len
+        self.window_size = window_size
         self.dim = dim
-        self.pred_len = (
-            seq_len if pred_len is None else pred_len
-        )  # 默认 pred_len = seq_len
+        self.pred_len = pred_len
         self.use_gpu = use_gpu
-        # 最低检索标准，每条序列能够检索的相似序列条数
-        self.min_retrieval = 5
-        self.device = torch.device(f"cuda:{gpu_index}" if use_gpu else "cpu".format(gpu_index))
+        self.device = torch.device(f"cuda:{gpu_index}" if use_gpu else "cpu")
 
         # 初始化 FAISS 索引（只存储 x）
-        self.faiss_dim = seq_len * dim
+        self.faiss_dim = window_size * dim
         index = faiss.IndexFlatL2(self.faiss_dim)  # L2 距离索引
-        # print("cuda gpus num: ", torch.cuda.device_count())
-        # print("faiss gpus num: ", faiss.get_num_gpus())
         if use_gpu:
             res = faiss.StandardGpuResources()
             self.index = faiss.index_cpu_to_gpu(res, gpu_index, index)
@@ -40,9 +34,24 @@ class MemoryBankWithRetrieval:
 
         self.y_store = None  # 用于存储所有的ground truth y
         self.x_mark_store = None  # 用于存储所有的x_mark
-        self.is_finish_update = False  # 标记是否还需要更新
 
-    def update(self, x, x_mark, y):
+    def load_dataset(self, dataset_loader):
+        """
+        Load a dataset into the memory bank.
+
+        Args:
+            dataset (Dataset): Dataset to load.
+        """
+        for batch_x, batch_y, batch_x_mark, batch_y_mark in dataset_loader:
+            batch_x = batch_x.to(self.device)
+            batch_y = batch_y.to(self.device)
+            batch_x_mark = batch_x_mark.to(self.device)
+            batch_y_mark = batch_y_mark.to(self.device)
+
+            # 更新内存库
+            self.update(batch_x, batch_x_mark, batch_y, batch_y_mark)
+
+    def update(self, x, x_mark, y, y_mark):
         """
         Update the memory bank with new input x and corresponding y.
 
@@ -50,12 +59,18 @@ class MemoryBankWithRetrieval:
             x (Tensor): Input sequence, shape (batch_size, seq_len, dim).
             y (Tensor): Output sequence, shape (batch_size, pred_len, dim).
         """
-        if self.is_finish_update:
-            return
+        y = y[:, -self.pred_len :, :]
+        x, x_mark, y, y_mark = (
+            x.float().detach(),
+            x_mark.float().detach(),
+            y.float().detach(),
+            y_mark.float().detach(),
+        )
         batch_size = x.size(0)
-        x_flat = (
-            x.view(batch_size, -1).detach().cpu().numpy()
-        )  # (batch_size, seq_len * dim)
+        x_flat = x.view(batch_size, -1).cpu().numpy()  # (batch_size, seq_len * dim)
+        y_flat = y.view(batch_size, -1)  # (batch_size, pred_len * dim)
+        batch_size = x.size(0)
+        x_flat = x.view(batch_size, -1).cpu().numpy()  # (batch_size, seq_len * dim)
         y_flat = y.view(batch_size, -1)  # (batch_size, pred_len * dim)
         x_mark = x_mark.view(batch_size, -1)  # (batch_size, seq_len * dim)
 
@@ -73,34 +88,6 @@ class MemoryBankWithRetrieval:
         else:
             self.x_mark_store = torch.cat([self.x_mark_store, x_mark], dim=0)
 
-    def finish(self):
-        """
-        Mark the memory bank as finished and release resources.
-        """
-        self.is_finish_update = True
-
-    def gumbel_softmax(self, logits, temperature, hard=False):
-        """
-        Apply Gumbel-Softmax to logits for differentiable sampling.
-
-        Args:
-            logits (Tensor): Shape (batch_size, k).
-            temperature (float): Temperature for smoothing.
-            hard (bool): Whether to use hard sampling.
-
-        Returns:
-            Tensor: Sampled probabilities, shape (batch_size, k).
-        """
-        gumbel_noise = -torch.log(-torch.log(torch.rand_like(logits) + 1e-8))
-        y = logits + gumbel_noise
-        y_soft = torch.softmax(y / temperature, dim=-1)
-        if hard:
-            index = y_soft.argmax(dim=-1, keepdim=True)
-            y_hard = torch.zeros_like(y_soft).scatter_(-1, index, 1.0)
-            return y_hard - y_soft.detach() + y_soft
-        else:
-            return y_soft
-
     def retrieve_similar(self, query, k):
         """
         Retrieve the top-k most similar y vectors from the memory bank using FAISS.
@@ -116,9 +103,6 @@ class MemoryBankWithRetrieval:
 
         batch_size, seq_len, dim = query.size()
 
-        if self.index.ntotal / batch_size < self.min_retrieval:
-            return None, None, None
-
         query_flat = (
             query.view(batch_size, -1).detach().cpu().numpy()
         )  # (batch_size, seq_len * dim)
@@ -127,16 +111,22 @@ class MemoryBankWithRetrieval:
         distances, indices, embeddings = self.index.search_and_reconstruct(
             query_flat, k
         )
+
+        # 将 indices 转换为张量，并从 y_store 中获取对应的 y
         embeddings = embeddings.reshape(batch_size, k, seq_len, self.dim)
 
         # 将 indices 转换为张量，并从 y_store 中获取对应的 y
-        indices_tensor = torch.tensor(indices, dtype=torch.long, device=self.y_store.device)
+        indices_tensor = torch.tensor(
+            indices, dtype=torch.long, device=self.y_store.device
+        )
 
         topk_y_flat = self.y_store[
             indices_tensor
         ]  # 形状为 (batch_size, k, pred_len * dim)
 
-        mark_x = self.x_mark_store[indices_tensor]  # 形状为 (batch_size, k, seq_len * dim)
+        mark_x = self.x_mark_store[
+            indices_tensor
+        ]  # 形状为 (batch_size, k, seq_len * dim)
 
         topk_y_gt = topk_y_flat.reshape(
             batch_size, k, self.pred_len, self.dim
@@ -144,44 +134,12 @@ class MemoryBankWithRetrieval:
 
         mark_x = mark_x.reshape(batch_size, k, seq_len, -1)
 
-        return torch.from_numpy(embeddings).to(query.device), mark_x.to(query.device), topk_y_gt.to(query.device)
-
-    def fuse_sequences(self, pred_seq, similar_seqs, fusion_mode="mean"):
-        """
-        Fuse the predicted sequence with retrieved similar sequences.
-
-        Args:
-            pred_seq (Tensor): Predicted sequence, shape (batch_size, pred_len, dim).
-            similar_seqs (Tensor): Retrieved sequences, shape (batch_size, k, pred_len, dim).
-            fusion_mode (str): Fusion mode ('mean', 'weighted_mean', 'mlp').
-
-        Returns:
-            Tensor: Fused sequence, shape (batch_size, pred_len, dim).
-        """
-        batch_size, k, pred_len, _ = similar_seqs.size()
-        if fusion_mode == "mean":
-            return (pred_seq + similar_seqs.mean(dim=1)) / 2
-        elif fusion_mode == "weighted_mean":
-            weights = F.softmax(
-                torch.ones_like(similar_seqs[:, :, 0, 0]), dim=1
-            )  # 简单均等权重
-            return (
-                torch.sum(weights.unsqueeze(-1).unsqueeze(-1) * similar_seqs, dim=1)
-                * 0.5
-                + pred_seq * 0.5
-            )
-        elif fusion_mode == "mlp":
-            combined = torch.cat(
-                [pred_seq.unsqueeze(1), similar_seqs], dim=1
-            )  # (batch_size, k+1, pred_len, dim)
-            mlp = nn.Sequential(
-                nn.Linear(self.dim * (k + 1), self.dim * 4),
-                nn.ReLU(),
-                nn.Linear(self.dim * 4, self.dim),
-            ).to(pred_seq.device)
-            return mlp(combined.view(batch_size, pred_len, -1))
-        else:
-            raise ValueError("Fusion mode must be 'mean', 'weighted_mean', or 'mlp'")
+        return (
+            torch.from_numpy(embeddings).to(query.device),
+            mark_x.to(query.device),
+            topk_y_gt.to(query.device),
+            torch.from_numpy(distances).to(query.device),
+        )
 
     def compute_trend_loss(self, pred_seq, similar_seqs, kernel_size=8):
         """

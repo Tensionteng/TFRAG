@@ -104,6 +104,32 @@ def visual(true, preds=None, name="./pic/test.pdf"):
     plt.savefig(name, bbox_inches="tight")
 
 
+def visual_similar(x, similar_x, name="./pic/similar.pdf"):
+    """
+    Retrieval results visualization
+    """
+    plt.figure()
+    for i in range(similar_x.shape[0]):
+        plt.plot(similar_x[i, :], label=f"Similar_{i+1}", linewidth=2)
+    plt.plot(x, label="X", linewidth=2)
+    plt.legend()
+    plt.savefig(name, bbox_inches="tight")
+
+
+def visual_adjustment(true, preds=None, adjusted_preds=None, name="./pic/adjustment.pdf"):
+    """
+    Adjustment results visualization
+    """
+    plt.figure()
+    plt.plot(true, label="GroundTruth", linewidth=2)
+    if preds is not None:
+        plt.plot(preds, label="Prediction", linewidth=2)
+    if adjusted_preds is not None:
+        plt.plot(adjusted_preds, label="Adjusted Prediction", linewidth=2)
+    plt.legend()
+    plt.savefig(name, bbox_inches="tight")
+
+
 def adjustment(gt, pred):
     anomaly_state = False
     for i in range(len(gt)):
@@ -126,6 +152,66 @@ def adjustment(gt, pred):
         if anomaly_state:
             pred[i] = 1
     return gt, pred
+
+
+def cal_rfft(signal, freq_ratio=0.1):
+    num_dims = signal.dim()
+
+    if num_dims not in {3, 4}:
+        raise ValueError("Input signal must be 3D or 4D tensor.")
+
+    # 选择 FFT 的维度
+    fft_dim = 1 if num_dims == 3 else 2
+
+    # 计算 FFT
+    fft_coeffs = torch.fft.rfft(signal, dim=fft_dim)
+
+    # 计算截止频率
+    seq_len = signal.shape[fft_dim - 1]
+    cutoff = int(seq_len * freq_ratio)
+
+    # 创建高频和低频掩码
+    mask = torch.zeros_like(fft_coeffs)
+    mask[..., cutoff:, :] = 1.0
+
+    # 分离高频和低频分量
+    high_coeffs = fft_coeffs * mask
+    low_coeffs = fft_coeffs * (1 - mask)
+
+    # 逆 FFT
+    high_signal = torch.fft.irfft(high_coeffs, dim=fft_dim)
+    low_signal = torch.fft.irfft(low_coeffs, dim=fft_dim)
+
+    return high_signal, low_signal
+
+
+def mse_reward_func(output, adjusted_output, gt):
+    criterion = torch.nn.MSELoss()
+    return 1.0 if criterion(adjusted_output, gt) < criterion(output, gt) else 0.0
+
+
+def mae_reward_func(output, adjusted_output, gt):
+    criterion = torch.nn.L1Loss()
+    return 1.0 if criterion(adjusted_output, gt) < criterion(output, gt) else 0.0
+
+
+def sample_bernoulli(weights, k):
+    """根据概率张量进行k次伯努利采样
+
+    Args:
+        p (torch.Tensor): 形状为 (bs, len, dim) 的概率张量，每个元素在0到1之间
+        k (int): 采样次数
+
+    Returns:
+        torch.Tensor: 形状为 (k, bs, len, dim) 的布尔张量，每个元素表示采样结果
+    """
+    # 生成形状为(k, bs, len, dim)的均匀分布随机数
+    randoms = torch.rand(
+        (k, *weights.shape), device=weights.device, dtype=weights.dtype
+    )
+    # 通过比较随机数与概率得到采样结果
+    samples = randoms < weights
+    return samples
 
 
 def cal_accuracy(y_pred, y_true):

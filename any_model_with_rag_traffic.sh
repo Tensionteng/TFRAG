@@ -19,11 +19,11 @@ python -u run.py \
   --dec_in 862 \
   --c_out 862 \
   --des 'Exp' \
-  --d_model 128 \
-  --d_ff 128 \
+  --d_model 512 \
+  --d_ff 512 \
   --batch_size 16 \
-  --learning_rate 0.001 \
   --itr 1 \
+  --lradj 'type3' \
   --use_rag
 
 python -u run.py \
@@ -45,11 +45,12 @@ python -u run.py \
   --dec_in 862 \
   --c_out 862 \
   --des 'Exp' \
-  --d_model 128 \
-  --d_ff 128 \
+  --d_model 512 \
+  --d_ff 512 \
   --batch_size 16 \
   --learning_rate 0.001 \
   --itr 1 \
+  --lradj 'type3' \
   --use_rag
 
 python -u run.py \
@@ -71,11 +72,12 @@ python -u run.py \
   --dec_in 862 \
   --c_out 862 \
   --des 'Exp' \
-  --d_model 128 \
-  --d_ff 128 \
+  --d_model 512 \
+  --d_ff 512 \
   --batch_size 16 \
   --learning_rate 0.001 \
   --itr 1 \
+  --lradj 'type3' \
   --use_rag
 
 python -u run.py \
@@ -97,9 +99,10 @@ python -u run.py \
   --dec_in 862 \
   --c_out 862 \
   --des 'Exp' \
-  --d_model 128 \
-  --d_ff 128 \
+  --d_model 512 \
+  --d_ff 512 \
   --batch_size 16 \
   --learning_rate 0.001 \
   --itr 1 \
+  --lradj 'type3' \
   --use_rag

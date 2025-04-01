@@ -47,8 +47,6 @@ class Model(nn.Module):
         else:
             self.Linear_Seasonal = nn.Linear(self.seq_len, self.pred_len)
             self.Linear_Trend = nn.Linear(self.seq_len, self.pred_len)
-            self.reward_seasonal = nn.Linear(self.seq_len, 1)
-            self.reward_trend = nn.Linear(self.seq_len, 1)
 
             self.Linear_Seasonal.weight = nn.Parameter(
                 (1 / self.seq_len) * torch.ones([self.pred_len, self.seq_len])
@@ -85,10 +83,7 @@ class Model(nn.Module):
         else:
             seasonal_output = self.Linear_Seasonal(seasonal_init)
             trend_output = self.Linear_Trend(trend_init)
-            r_seasonal = self.reward_seasonal(seasonal_init)
-            r_trend = self.reward_trend(trend_init)
         x = seasonal_output + trend_output
-        reward = r_seasonal + r_trend
         x = x.permute(0, 2, 1)
 
         return x

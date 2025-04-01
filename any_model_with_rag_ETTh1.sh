@@ -5,11 +5,11 @@ python -u run.py \
   --is_training 1 \
   --root_path ./dataset/all_datasets/ETT-small/ \
   --data_path ETTh1.csv \
-  --model_id ETTh1_336_96 \
+  --model_id ETTh1_96_96 \
   --model $model_name \
   --data ETTh1 \
   --features M \
-  --seq_len 336 \
+  --seq_len 96 \
   --label_len 48 \
   --pred_len 96 \
   --e_layers 2 \
@@ -24,7 +24,8 @@ python -u run.py \
   --d_ff 128 \
   --itr 1 \
   --loss 'MSE' \
-  --lradj 'type3'
+  --lradj 'type3' \
+  --use_rag
 
 # python -u run.py \
 #   --task_name long_term_forecast \
@@ -49,6 +50,7 @@ python -u run.py \
 #   --train_epochs 50 \
 #   --d_ff 128 \
 #   --itr 1  \
+#   --lradj 'type3' \
 #   --use_rag
 
 # python -u run.py \
@@ -74,6 +76,7 @@ python -u run.py \
 #   --train_epochs 50 \
 #   --d_ff 128 \
 #   --itr 1 \
+#   --lradj 'type3' \
 #   --use_rag
 
 # python -u run.py \
@@ -99,4 +102,5 @@ python -u run.py \
 #   --train_epochs 50 \
 #   --d_ff 128 \
 #   --itr 1 \
+#   --lradj 'type3' \
 #   --use_rag

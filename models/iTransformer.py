@@ -53,7 +53,35 @@ class Model(nn.Module):
             self.task_name == "long_term_forecast"
             or self.task_name == "short_term_forecast"
         ):
-            self.projection = nn.Linear(configs.d_model, configs.pred_len, bias=True)
+            self.projection = nn.Linear(configs.d_model, configs.pred_len, bias=False)
+            self.action_mean = nn.Sequential(
+                nn.Linear(configs.d_model, configs.pred_len, bias=True),
+                nn.Tanh(),
+            )
+            self.action_logstd = nn.Sequential(
+                nn.Linear(configs.d_model, configs.pred_len, bias=True),
+                nn.Softplus(),
+            )
+            self.action_mean_cat = nn.Sequential(
+                nn.Linear(configs.pred_len * 2, configs.pred_len, bias=False),
+                nn.Tanh(),
+            )
+            # 均值初始均值为output和gt之间的差值
+            self.action_mean_cat[0].weight = nn.Parameter(
+                torch.cat(
+                    [
+                        torch.eye(configs.pred_len) * -1.0,
+                        torch.eye(configs.pred_len),
+                    ],
+                    dim=1,
+                )
+            )
+
+            # 初始标准差不能太大
+            self.action_logstd_cat = nn.Parameter(
+                torch.zeros(1, configs.pred_len, configs.enc_in) - 1.0
+            )
+
         if self.task_name == "imputation":
             self.projection = nn.Linear(configs.d_model, configs.seq_len, bias=True)
         if self.task_name == "anomaly_detection":
@@ -64,6 +92,43 @@ class Model(nn.Module):
             self.projection = nn.Linear(
                 configs.d_model * configs.enc_in, configs.num_class
             )
+
+    def get_dist(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+        # Normalization from Non-stationary Transformer
+        means = x_enc.mean(1, keepdim=True).detach()
+        x_enc = x_enc - means
+        stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
+        x_enc = x_enc / stdev
+
+        _, _, N = x_enc.shape
+
+        # Embedding
+        enc_out = self.enc_embedding(x_enc, None)
+        # enc_out = self.action_embedding(x_enc, x_mark_enc)
+        enc_out, attns = self.encoder(enc_out, attn_mask=None)
+
+        action_mean = self.action_mean(enc_out).permute(0, 2, 1)[:, :, :N]
+        action_logstd = self.action_logstd(enc_out).permute(0, 2, 1)[:, :, :N]
+        action_logstd = torch.clamp(action_logstd, min=-5, max=0)
+        action_std = torch.exp(action_logstd)  # [B, L, D]
+
+        # De-Normalization from Non-stationary Transformer
+        # action_mean = action_mean * (
+        #     stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
+        # )
+        # action_mean = action_mean + (
+        #     means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
+        # )
+
+        return torch.distributions.Normal(action_mean, action_std)
+
+    def get_dist_cat(self, x):
+        _, _, N = x.shape
+        x = x.permute(0, 2, 1)  # [B, L, D] -> [B, D, L]
+        action_mean = self.action_mean_cat(x).permute(0, 2, 1)[:, :, :N]
+        action_std = torch.exp(self.action_logstd_cat)
+
+        return torch.distributions.Normal(action_mean, action_std)
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
         # Normalization from Non-stationary Transformer
