@@ -168,5 +168,4 @@ run_anylearn.py
 environment.txt
 
 similar/
-adj/
-adjustment/
+adjust_result/

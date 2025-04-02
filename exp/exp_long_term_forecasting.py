@@ -266,11 +266,18 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                                 ad = np.concatenate(
                                     (input[0, :, -1], ad_pred[0, :, -1]), axis=0
                                 )
+                                floder = "./adjust_result/ETTh1_96_96_iTransformer/"
+                                if not os.path.exists(floder):
+                                    os.makedirs(floder)
+
                                 visual_adjustment(
                                     gt,
                                     pd,
                                     ad,
-                                    name=f"./adj/epoch{epoch}_{i}_iter{j}_reward_{reward}.png",
+                                    name=os.path.join(
+                                        floder,
+                                        f"epoch{epoch}_{i}_iter{j}_reward_{reward}.png",
+                                    ),
                                 )
                             log_probs.append(log_prob)
                             rewards.append(reward)
@@ -288,11 +295,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         # 均值大小也在340左右
                         rl_loss = -(
                             torch.mean(
-                                log_probs
-                                * advantages.unsqueeze(-1)
-                                .unsqueeze(-1)
-                                .unsqueeze(-1)
-                                .detach()
+                                torch.exp(log_probs)
+                                * advantages.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
                             )
                             - 0.01 * torch.mean(torch.stack(adjustment_limitation))
                         )

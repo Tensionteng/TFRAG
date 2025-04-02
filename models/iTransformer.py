@@ -67,6 +67,7 @@ class Model(nn.Module):
                 nn.Tanh(),
             )
             # 均值初始均值为output和gt之间的差值
+            self.action_mean[0].weight = nn.Parameter(torch.eye(configs.pred_len))
             self.action_mean_cat[0].weight = nn.Parameter(
                 torch.cat(
                     [

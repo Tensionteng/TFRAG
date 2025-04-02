@@ -28,7 +28,6 @@ class Exp_Basic(object):
             'iTransformer': iTransformer,
             'Koopa': Koopa,
             'TiDE': TiDE,
-            'TFRAG': TFRAG,
             'FreTS': FreTS,
             'MambaSimple': MambaSimple,
             'TimeMixer': TimeMixer,
