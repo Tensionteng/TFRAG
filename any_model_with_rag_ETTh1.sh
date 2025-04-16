@@ -1,4 +1,4 @@
-model_name=iTransformer
+model_name=PatchTST
 
 python -u run.py \
   --task_name long_term_forecast \

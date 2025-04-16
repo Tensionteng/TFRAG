@@ -1,4 +1,5 @@
 import os
+from tkinter import NO
 
 import numpy as np
 import torch
@@ -116,16 +117,32 @@ def visual_similar(x, similar_x, name="./pic/similar.pdf"):
     plt.savefig(name, bbox_inches="tight")
 
 
-def visual_adjustment(true, preds=None, adjusted_preds=None, name="./pic/adjustment.pdf"):
+def visual_adjustment(
+    true,
+    s_gt,
+    preds=None,
+    adjusted_preds=None,
+    mean=None,
+    diff=None,
+    action=None,
+    name="./pic/adjustment.pdf",
+):
     """
     Adjustment results visualization
     """
     plt.figure()
-    plt.plot(true, label="GroundTruth", linewidth=2)
+    plt.plot(true, label="GT", linewidth=2)
+    plt.plot(s_gt, label="Similar_GT", linewidth=2)
     if preds is not None:
         plt.plot(preds, label="Prediction", linewidth=2)
     if adjusted_preds is not None:
         plt.plot(adjusted_preds, label="Adjusted Prediction", linewidth=2)
+    if mean is not None:
+        plt.plot(mean, label="Mean", linewidth=2)
+    if diff is not None:
+        plt.plot(diff, label="Diff", linewidth=2)
+    if action is not None:
+        plt.plot(action, label="Action", linewidth=2)
     plt.legend()
     plt.savefig(name, bbox_inches="tight")
 
@@ -186,13 +203,24 @@ def cal_rfft(signal, freq_ratio=0.1):
 
 
 def mse_reward_func(output, adjusted_output, gt):
-    criterion = torch.nn.MSELoss()
-    return 1.0 if criterion(adjusted_output, gt) < criterion(output, gt) else 0.0
+    mse_output = ((output - gt) ** 2).mean(dim=(1, 2))
+    mse_adjusted = ((adjusted_output - gt) ** 2).mean(dim=(1, 2))
+    return torch.where(
+        mse_adjusted < mse_output,
+        torch.tensor(1.0, device=output.device),
+        torch.tensor(0.0, device=output.device),
+    )
 
 
 def mae_reward_func(output, adjusted_output, gt):
-    criterion = torch.nn.L1Loss()
-    return 1.0 if criterion(adjusted_output, gt) < criterion(output, gt) else 0.0
+    mae_output = torch.abs(output - gt).mean(dim=(1, 2))
+    mae_adjusted = torch.abs(adjusted_output - gt).mean(dim=(1, 2))
+    return torch.where(
+        mae_adjusted < mae_output,
+        torch.tensor(1.0, device=output.device),
+        torch.tensor(0.0, device=output.device),
+    )
+    
 
 
 def sample_bernoulli(weights, k):
@@ -215,4 +243,18 @@ def sample_bernoulli(weights, k):
 
 
 def cal_accuracy(y_pred, y_true):
-    return np.mean(y_pred == y_true)
+    """计算每个batch的准确率
+
+    Args:
+        y_pred (torch.Tensor): 预测值，形状为(bs, len, dim)
+        y_true (torch.Tensor): 真实值，形状为(bs, len, dim)
+
+    Returns:
+        torch.Tensor: 每个batch的准确率，形状为(bs,)
+    """
+    # 计算每个样本的正确预测数量
+    correct = (y_pred == y_true).sum(dim=(1, 2))
+    # 计算每个样本的总预测数量
+    total = y_true.shape[1] * y_true.shape[2]
+    # 返回每个batch的准确率
+    return correct.float() / total

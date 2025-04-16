@@ -4,13 +4,17 @@ from layers.Transformer_EncDec import Encoder, EncoderLayer
 from layers.SelfAttention_Family import FullAttention, AttentionLayer
 from layers.Embed import PatchEmbedding
 
+
 class Transpose(nn.Module):
-    def __init__(self, *dims, contiguous=False): 
+    def __init__(self, *dims, contiguous=False):
         super().__init__()
         self.dims, self.contiguous = dims, contiguous
+
     def forward(self, x):
-        if self.contiguous: return x.transpose(*self.dims).contiguous()
-        else: return x.transpose(*self.dims)
+        if self.contiguous:
+            return x.transpose(*self.dims).contiguous()
+        else:
+            return x.transpose(*self.dims)
 
 
 class FlattenHead(nn.Module):
@@ -46,45 +50,102 @@ class Model(nn.Module):
 
         # patching and embedding
         self.patch_embedding = PatchEmbedding(
-            configs.d_model, patch_len, stride, padding, configs.dropout)
+            configs.d_model, patch_len, stride, padding, configs.dropout
+        )
 
         # Encoder
         self.encoder = Encoder(
             [
                 EncoderLayer(
                     AttentionLayer(
-                        FullAttention(False, configs.factor, attention_dropout=configs.dropout,
-                                      output_attention=False), configs.d_model, configs.n_heads),
+                        FullAttention(
+                            False,
+                            configs.factor,
+                            attention_dropout=configs.dropout,
+                            output_attention=False,
+                        ),
+                        configs.d_model,
+                        configs.n_heads,
+                    ),
                     configs.d_model,
                     configs.d_ff,
                     dropout=configs.dropout,
-                    activation=configs.activation
-                ) for l in range(configs.e_layers)
+                    activation=configs.activation,
+                )
+                for l in range(configs.e_layers)
             ],
-            norm_layer=nn.Sequential(Transpose(1,2), nn.BatchNorm1d(configs.d_model), Transpose(1,2))
+            norm_layer=nn.Sequential(
+                Transpose(1, 2), nn.BatchNorm1d(configs.d_model), Transpose(1, 2)
+            ),
         )
 
         # Prediction Head
-        self.head_nf = configs.d_model * \
-                       int((configs.seq_len - patch_len) / stride + 2)
-        if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
-            self.head = FlattenHead(configs.enc_in, self.head_nf, configs.pred_len,
-                                    head_dropout=configs.dropout)
-        elif self.task_name == 'imputation' or self.task_name == 'anomaly_detection':
-            self.head = FlattenHead(configs.enc_in, self.head_nf, configs.seq_len,
-                                    head_dropout=configs.dropout)
-        elif self.task_name == 'classification':
+        self.head_nf = configs.d_model * int((configs.seq_len - patch_len) / stride + 2)
+        if (
+            self.task_name == "long_term_forecast"
+            or self.task_name == "short_term_forecast"
+        ):
+            self.head = FlattenHead(
+                configs.enc_in,
+                self.head_nf,
+                configs.pred_len,
+                head_dropout=configs.dropout,
+            )
+            self.action_mean = nn.Sequential(
+                nn.Linear(configs.pred_len, configs.pred_len, bias=True),
+                # nn.Tanh(),
+            )
+            self.action_logstd = nn.Sequential(
+                nn.Linear(configs.pred_len, configs.pred_len, bias=True),
+                nn.Softplus(),
+            )
+            # self.action_mean[0].weight = nn.Parameter(torch.eye(configs.pred_len))
+            # self.action_mean[0].bias = nn.Parameter(torch.zeros(configs.pred_len))
+        elif self.task_name == "imputation" or self.task_name == "anomaly_detection":
+            self.head = FlattenHead(
+                configs.enc_in,
+                self.head_nf,
+                configs.seq_len,
+                head_dropout=configs.dropout,
+            )
+        elif self.task_name == "classification":
             self.flatten = nn.Flatten(start_dim=-2)
             self.dropout = nn.Dropout(configs.dropout)
             self.projection = nn.Linear(
-                self.head_nf * configs.enc_in, configs.num_class)
+                self.head_nf * configs.enc_in, configs.num_class
+            )
+
+    def get_dist(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+        means = x_enc.mean(1, keepdim=True).detach()
+        x_enc = x_enc - means
+        stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
+        x_enc = x_enc / stdev
+        _, _, N = x_enc.shape
+
+        x_enc = x_enc.permute(0, 2, 1)  # [B, L, D] -> [B, D, L]
+        action_mean = self.action_mean(x_enc).permute(0, 2, 1)[:, :, :N]
+        action_logstd = self.action_logstd(x_enc).permute(0, 2, 1)[:, :, :N]
+        action_logstd = torch.clamp(action_logstd, max=-1)
+        action_std = torch.exp(action_logstd)  # [B, L, D]
+
+        action_mean = action_mean * (
+            stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
+        )
+        action_mean = action_mean + (
+            means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
+        )
+        if torch.isnan(action_std).any() or torch.isinf(action_std).any():
+            print("action_std 中有无效值")
+        if (action_std <= 0).any():
+            print("标准差非正")
+
+        return torch.distributions.Normal(action_mean, action_std)
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
         # Normalization from Non-stationary Transformer
         means = x_enc.mean(1, keepdim=True).detach()
         x_enc = x_enc - means
-        stdev = torch.sqrt(
-            torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
+        stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
         x_enc /= stdev
 
         # do patching and embedding
@@ -97,7 +158,8 @@ class Model(nn.Module):
         enc_out, attns = self.encoder(enc_out)
         # z: [bs x nvars x patch_num x d_model]
         enc_out = torch.reshape(
-            enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1]))
+            enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1])
+        )
         # z: [bs x nvars x d_model x patch_num]
         enc_out = enc_out.permute(0, 1, 3, 2)
 
@@ -106,10 +168,8 @@ class Model(nn.Module):
         dec_out = dec_out.permute(0, 2, 1)
 
         # De-Normalization from Non-stationary Transformer
-        dec_out = dec_out * \
-                  (stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
-        dec_out = dec_out + \
-                  (means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
+        dec_out = dec_out * (stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
+        dec_out = dec_out + (means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
         return dec_out
 
     def imputation(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask):
@@ -118,8 +178,9 @@ class Model(nn.Module):
         means = means.unsqueeze(1).detach()
         x_enc = x_enc - means
         x_enc = x_enc.masked_fill(mask == 0, 0)
-        stdev = torch.sqrt(torch.sum(x_enc * x_enc, dim=1) /
-                           torch.sum(mask == 1, dim=1) + 1e-5)
+        stdev = torch.sqrt(
+            torch.sum(x_enc * x_enc, dim=1) / torch.sum(mask == 1, dim=1) + 1e-5
+        )
         stdev = stdev.unsqueeze(1).detach()
         x_enc /= stdev
 
@@ -133,7 +194,8 @@ class Model(nn.Module):
         enc_out, attns = self.encoder(enc_out)
         # z: [bs x nvars x patch_num x d_model]
         enc_out = torch.reshape(
-            enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1]))
+            enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1])
+        )
         # z: [bs x nvars x d_model x patch_num]
         enc_out = enc_out.permute(0, 1, 3, 2)
 
@@ -142,18 +204,15 @@ class Model(nn.Module):
         dec_out = dec_out.permute(0, 2, 1)
 
         # De-Normalization from Non-stationary Transformer
-        dec_out = dec_out * \
-                  (stdev[:, 0, :].unsqueeze(1).repeat(1, self.seq_len, 1))
-        dec_out = dec_out + \
-                  (means[:, 0, :].unsqueeze(1).repeat(1, self.seq_len, 1))
+        dec_out = dec_out * (stdev[:, 0, :].unsqueeze(1).repeat(1, self.seq_len, 1))
+        dec_out = dec_out + (means[:, 0, :].unsqueeze(1).repeat(1, self.seq_len, 1))
         return dec_out
 
     def anomaly_detection(self, x_enc):
         # Normalization from Non-stationary Transformer
         means = x_enc.mean(1, keepdim=True).detach()
         x_enc = x_enc - means
-        stdev = torch.sqrt(
-            torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
+        stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
         x_enc /= stdev
 
         # do patching and embedding
@@ -166,7 +225,8 @@ class Model(nn.Module):
         enc_out, attns = self.encoder(enc_out)
         # z: [bs x nvars x patch_num x d_model]
         enc_out = torch.reshape(
-            enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1]))
+            enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1])
+        )
         # z: [bs x nvars x d_model x patch_num]
         enc_out = enc_out.permute(0, 1, 3, 2)
 
@@ -175,18 +235,15 @@ class Model(nn.Module):
         dec_out = dec_out.permute(0, 2, 1)
 
         # De-Normalization from Non-stationary Transformer
-        dec_out = dec_out * \
-                  (stdev[:, 0, :].unsqueeze(1).repeat(1, self.seq_len, 1))
-        dec_out = dec_out + \
-                  (means[:, 0, :].unsqueeze(1).repeat(1, self.seq_len, 1))
+        dec_out = dec_out * (stdev[:, 0, :].unsqueeze(1).repeat(1, self.seq_len, 1))
+        dec_out = dec_out + (means[:, 0, :].unsqueeze(1).repeat(1, self.seq_len, 1))
         return dec_out
 
     def classification(self, x_enc, x_mark_enc):
         # Normalization from Non-stationary Transformer
         means = x_enc.mean(1, keepdim=True).detach()
         x_enc = x_enc - means
-        stdev = torch.sqrt(
-            torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
+        stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
         x_enc /= stdev
 
         # do patching and embedding
@@ -199,7 +256,8 @@ class Model(nn.Module):
         enc_out, attns = self.encoder(enc_out)
         # z: [bs x nvars x patch_num x d_model]
         enc_out = torch.reshape(
-            enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1]))
+            enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1])
+        )
         # z: [bs x nvars x d_model x patch_num]
         enc_out = enc_out.permute(0, 1, 3, 2)
 
@@ -211,17 +269,19 @@ class Model(nn.Module):
         return output
 
     def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
-        if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
+        if (
+            self.task_name == "long_term_forecast"
+            or self.task_name == "short_term_forecast"
+        ):
             dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
-            return dec_out[:, -self.pred_len:, :]  # [B, L, D]
-        if self.task_name == 'imputation':
-            dec_out = self.imputation(
-                x_enc, x_mark_enc, x_dec, x_mark_dec, mask)
+            return dec_out[:, -self.pred_len :, :]  # [B, L, D]
+        if self.task_name == "imputation":
+            dec_out = self.imputation(x_enc, x_mark_enc, x_dec, x_mark_dec, mask)
             return dec_out  # [B, L, D]
-        if self.task_name == 'anomaly_detection':
+        if self.task_name == "anomaly_detection":
             dec_out = self.anomaly_detection(x_enc)
             return dec_out  # [B, L, D]
-        if self.task_name == 'classification':
+        if self.task_name == "classification":
             dec_out = self.classification(x_enc, x_mark_enc)
             return dec_out  # [B, N]
         return None

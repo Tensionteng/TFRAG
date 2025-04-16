@@ -23,6 +23,7 @@ from utils.dtw_metric import dtw, accelerated_dtw
 from utils.augmentation import run_augmentation, run_augmentation_single
 from datetime import datetime
 from layers.Autoformer_EncDec import series_decomp
+import faiss.contrib.torch_utils
 
 warnings.filterwarnings("ignore")
 
@@ -32,14 +33,13 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         super(Exp_Long_Term_Forecast, self).__init__(args)
         if args.use_rag:
             self.memory_bank = MemoryBankWithRetrieval(
-                window_size=args.seq_len,
+                seq_len=args.seq_len,
                 dim=args.enc_in,
                 pred_len=args.pred_len,
                 use_gpu=True,
                 gpu_index=1,
             )
             self.num_retrieve = args.num_retrieve
-            self.old_model = self.model
 
     def _build_model(self):
         model = self.model_dict[self.args.model].Model(self.args).float()
@@ -124,9 +124,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         test_data, test_loader = self._get_data(flag="test")
 
         if self.args.use_rag:
-            print("Loading memory bank...")
             self.memory_bank.load_dataset(train_loader)
-            print("Memory bank loading finished.")
 
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
@@ -214,7 +212,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                         d_min = distances.min(dim=1, keepdim=True)[0]
                         d_max = distances.max(dim=1, keepdim=True)[0]
-                        weights = (distances - d_min) / (d_max - d_min + 1e-8)
+                        weights = (distances - d_min) / (d_max - d_min + 1e-4)
                         weights = torch.exp(-weights)
                         weights = F.softmax(weights, dim=1)
 
@@ -225,13 +223,17 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         )
 
                         # diff版本
-                        # diff_y = similar_seqs_gt - outputs.detach()
-                        # dist = self.model.get_dist(diff_y, None, None, None)
+                        diff_y = similar_seqs_gt - (
+                            # 2.0 * outputs - 1.0 * outputs.detach()
+                            outputs
+                        )
+                        dist = self.model.get_dist(diff_y, None, None, None)
 
                         # concat版本
-                        dist = self.model.get_dist_cat(
-                            torch.cat([outputs, similar_seqs_gt], dim=1)
-                        )
+                        # dist = self.model.get_dist_cat(
+                        #     torch.cat([outputs, similar_seqs_gt], dim=1)
+                        # )
+
                         num_samples = 10
                         log_probs = []
                         rewards = []
@@ -239,26 +241,33 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         # n次采样
                         for j in range(num_samples):
                             action = dist.rsample()
+                            log_prob = dist.log_prob(action)
                             # 平均池化，每3步做平均
                             action = F.avg_pool1d(
                                 action.permute(0, 2, 1),
-                                kernel_size=3,
+                                kernel_size=5,
                                 stride=1,
-                                padding=1,
+                                padding=2,
                             ).permute(0, 2, 1)
                             adjusted_ouput = outputs + action
-                            log_prob = dist.log_prob(action)
                             reward = mae_reward_func(
                                 outputs, adjusted_ouput, batch_y
                             ) + mse_reward_func(outputs, adjusted_ouput, batch_y)
                             # 可视化调整后的结果
-                            if reward > 0 and i % 100 == 0 and j % 5 == 0:
+                            if i % 100 == 0 and j % 5 == 0:
                                 input = batch_x.detach().cpu().numpy()
                                 y = batch_y.detach().cpu().numpy()
                                 pred = outputs.detach().cpu().numpy()
                                 ad_pred = adjusted_ouput.detach().cpu().numpy()
+                                s_gt = similar_seqs_gt.detach().cpu().numpy()
+                                mean = dist.mean.detach().cpu().numpy()
+                                diff = diff_y.detach().cpu().numpy()
+                                action_clone = action.detach().cpu().numpy()
                                 gt = np.concatenate(
                                     (input[0, :, -1], y[0, :, -1]), axis=0
+                                )
+                                s_gt = np.concatenate(
+                                    (input[0, :, -1], s_gt[0, :, -1]), axis=0
                                 )
                                 pd = np.concatenate(
                                     (input[0, :, -1], pred[0, :, -1]), axis=0
@@ -266,17 +275,31 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                                 ad = np.concatenate(
                                     (input[0, :, -1], ad_pred[0, :, -1]), axis=0
                                 )
-                                floder = "./adjust_result/ETTh1_96_96_iTransformer/"
+                                mean = np.concatenate(
+                                    (input[0, :, -1], mean[0, :, -1]), axis=0
+                                )
+                                diff = np.concatenate(
+                                    (input[0, :, -1], diff[0, :, -1]), axis=0
+                                )
+                                action_clone = np.concatenate(
+                                    (input[0, :, -1], action_clone[0, :, -1]), axis=0
+                                )
+
+                                floder = f"./adjust_result/{self.args.model_id}_{self.args.model}/"
                                 if not os.path.exists(floder):
                                     os.makedirs(floder)
 
                                 visual_adjustment(
                                     gt,
+                                    s_gt,
                                     pd,
                                     ad,
+                                    mean,
+                                    diff,
+                                    action_clone,
                                     name=os.path.join(
                                         floder,
-                                        f"epoch{epoch}_{i}_iter{j}_reward_{reward}.png",
+                                        f"epoch{epoch}_{i}_iter{j}_reward_{reward[0].item()}.png",
                                     ),
                                 )
                             log_probs.append(log_prob)
@@ -285,19 +308,18 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                             adjustment_limitation.append(action.norm(p=2))
 
                         log_probs = torch.stack(log_probs, dim=0)
-                        rewards = torch.tensor(
-                            rewards, dtype=torch.float32, device=self.device
-                        )
+                        rewards = torch.stack(rewards, dim=0)
 
                         mean = rewards.mean(dim=0, keepdim=True)
-                        std = rewards.std(dim=0, keepdim=True) + 1e-8
+                        std = rewards.std(dim=0, keepdim=True) + 1e-4
                         advantages = (rewards - mean) / std  # 标准化奖励
+                        # per_setp_loss = torch.exp(log_probs - log_probs.detach()) * advantages.unsqueeze(-1).unsqueeze(-1)
+                        per_setp_loss = log_probs * advantages.unsqueeze(-1).unsqueeze(
+                            -1
+                        )
                         # 均值大小也在340左右
                         rl_loss = -(
-                            torch.mean(
-                                torch.exp(log_probs)
-                                * advantages.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-                            )
+                            per_setp_loss.mean()
                             - 0.01 * torch.mean(torch.stack(adjustment_limitation))
                         )
 
@@ -375,6 +397,144 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         self.model.load_state_dict(torch.load(best_model_path))
 
         return self.model
+    
+
+    def _train(self, setting):
+
+        train_data, train_loader = self._get_data(flag="train")
+        vali_data, vali_loader = self._get_data(flag="val")
+        test_data, test_loader = self._get_data(flag="test")
+
+        path = os.path.join(self.args.checkpoints, setting)
+        if not os.path.exists(path):
+            os.makedirs(path)
+
+        time_now = time.time()
+
+        train_steps = len(train_loader)
+        early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
+
+        model_optim = self._select_optimizer()
+        criterion = self._select_criterion()
+
+        if self.args.use_amp:
+            scaler = torch.cuda.amp.GradScaler()
+
+        for epoch in range(self.args.train_epochs):
+            iter_count = 0
+            train_loss = []
+
+            self.model.train()
+            epoch_time = time.time()
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(
+                train_loader
+            ):
+                iter_count += 1
+                model_optim.zero_grad()
+                batch_x = batch_x.float().to(self.device)
+                batch_y = batch_y.float().to(self.device)
+                batch_x_mark = batch_x_mark.float().to(self.device)
+                batch_y_mark = batch_y_mark.float().to(self.device)
+
+                # decoder input
+                dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len :, :]).float()
+                dec_inp = (
+                    torch.cat([batch_y[:, : self.args.label_len, :], dec_inp], dim=1)
+                    .float()
+                    .to(self.device)
+                )
+
+                # encoder - decoder
+                if self.args.use_amp:
+                    with torch.cuda.amp.autocast():
+                        outputs = self.model(
+                            batch_x, batch_x_mark, dec_inp, batch_y_mark
+                        )
+
+                        f_dim = -1 if self.args.features == "MS" else 0
+                        outputs = outputs[:, -self.args.pred_len :, f_dim:]
+                        batch_y = batch_y[:, -self.args.pred_len :, f_dim:].to(
+                            self.device
+                        )
+
+                        if self.args.use_rag:
+                            loss = criterion(
+                                outputs, batch_y, trend_weight=0.1, freq_weight=0.1
+                            )
+                        else:
+                            loss = criterion(outputs, batch_y)
+
+                        train_loss.append(loss.item())
+                else:
+                    dist = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+
+                    f_dim = -1 if self.args.features == "MS" else 0
+                    # outputs = outputs[:, -self.args.pred_len :, f_dim:]
+                    batch_y = batch_y[:, -self.args.pred_len :, f_dim:].to(self.device)
+
+                    num_samples = 10
+                    for i in range(num_samples):
+                        outputs = dist.rsample()
+                        log_prob = dist.log_prob(outputs)
+                        # 平均池化，每3步做平均
+                        outputs = F.avg_pool1d(
+                            outputs.permute(0, 2, 1),
+                            kernel_size=5,
+                            stride=1,
+                            padding=2,
+                        ).permute(0, 2, 1)
+
+                    loss = criterion(outputs, batch_y)
+
+                    train_loss.append(loss.item())
+
+                if (i + 1) % 100 == 0:
+                    print(
+                        "\titers: {0}, epoch: {1} | loss: {2:.7f}".format(
+                            i + 1, epoch + 1, loss.item()
+                        )
+                    )
+                    speed = (time.time() - time_now) / iter_count
+                    left_time = speed * (
+                        (self.args.train_epochs - epoch) * train_steps - i
+                    )
+                    print(
+                        "\tspeed: {:.4f}s/iter; left time: {:.4f}s".format(
+                            speed, left_time
+                        )
+                    )
+                    iter_count = 0
+                    time_now = time.time()
+
+                if self.args.use_amp:
+                    scaler.scale(loss).backward()
+                    scaler.step(model_optim)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    model_optim.step()
+
+            print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
+            train_loss = np.average(train_loss)
+            vali_loss = self.vali(vali_data, vali_loader, criterion)
+            test_loss = self.vali(test_data, test_loader, criterion)
+
+            print(
+                "Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
+                    epoch + 1, train_steps, train_loss, vali_loss, test_loss
+                )
+            )
+            early_stopping(vali_loss, self.model, path)
+            if early_stopping.early_stop:
+                print("Early stopping")
+                break
+
+            adjust_learning_rate(model_optim, epoch + 1, self.args)
+
+        best_model_path = path + "/" + "checkpoint.pth"
+        self.model.load_state_dict(torch.load(best_model_path))
+
+        return self.model
 
     def test(self, setting, test=0):
 
@@ -388,6 +548,16 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             self.model.load_state_dict(
                 torch.load(os.path.join("./checkpoints/" + setting, "checkpoint.pth"))
             )
+            # if self.args.use_rag:
+            #     self.memory_bank = MemoryBankWithRetrieval(
+            #         window_size=self.args.seq_len,
+            #         dim=self.args.enc_in,
+            #         pred_len=self.args.pred_len,
+            #         use_gpu=True,
+            #         gpu_index=1,
+            #     )
+            #     self.num_retrieve = self.args.num_retrieve
+            #     self.memory_bank.load_dataset(test_loader)
 
         preds = []
         trues = []
@@ -422,6 +592,67 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 f_dim = -1 if self.args.features == "MS" else 0
                 outputs = outputs[:, -self.args.pred_len :, :]
                 batch_y = batch_y[:, -self.args.pred_len :, :].to(self.device)
+                # if self.args.use_rag:
+                #     (
+                #         similar_seqs,
+                #         similar_seqs_mark_x,
+                #         similar_seqs_gt,
+                #         distances,
+                #     ) = self.memory_bank.retrieve_similar(
+                #         batch_x,
+                #         k=5,
+                #     )
+                #     if similar_seqs is not None and  i % 20 == 0:
+                #         input = batch_x.detach().cpu().numpy()
+                #         similar_input = similar_seqs.detach().cpu().numpy()
+                #         similar_y = similar_seqs_gt.detach().cpu().numpy()
+                #         pred = outputs.detach().cpu().numpy()
+                #         if test_data.scale and self.args.inverse:
+                #             shape = input.shape
+                #             input = test_data.inverse_transform(
+                #                 input.reshape(shape[0] * shape[1], -1)
+                #             ).reshape(shape)
+                #             similar_input = test_data.inverse_transform(
+                #                 similar_input.reshape(shape[0] * shape[1], -1)
+                #             ).reshape(shape)
+                #             similar_y = test_data.inverse_transform(
+                #                 similar_y.reshape(shape[0] * shape[1], -1)
+                #             ).reshape(shape)
+                #             pred = test_data.inverse_transform(
+                #                 pred.reshape(shape[0] * shape[1], -1)
+                #             ).reshape(shape)
+                #         x = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
+                #         y = np.concatenate(
+                #             (similar_input[0, :, :, -1], similar_y[0, :, :, -1]),
+                #             axis=1,
+                #         )
+                #         visual_similar(
+                #             x, y, os.path.join(folder_path, "similar" + str(i) + ".png")
+                #         )
+
+                #     d_min = distances.min(dim=1, keepdim=True)[0]
+                #     d_max = distances.max(dim=1, keepdim=True)[0]
+                #     weights = (distances - d_min) / (d_max - d_min + 1e-8)
+                #     weights = torch.exp(-weights)
+                #     weights = F.softmax(weights, dim=1)
+
+                #     # 计算加权平均
+                #     similar_seqs_gt = torch.sum(
+                #         weights.unsqueeze(-1).unsqueeze(-1) * similar_seqs_gt,
+                #         dim=1,
+                #     )
+
+                #     diff_y = similar_seqs_gt - outputs
+                #     dist = self.model.get_dist(diff_y, None, None, None)
+                #     action = dist.mean
+                #     action = F.avg_pool1d(
+                #         action.permute(0, 2, 1),
+                #         kernel_size=5,
+                #         stride=1,
+                #         padding=2,
+                #     ).permute(0, 2, 1)
+                #     action = action.detach().cpu().numpy()
+                #     similar_seqs_gt = similar_seqs_gt.detach().cpu().numpy()
                 outputs = outputs.detach().cpu().numpy()
                 batch_y = batch_y.detach().cpu().numpy()
                 if test_data.scale and self.args.inverse:
@@ -433,11 +664,17 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     outputs = test_data.inverse_transform(
                         outputs.reshape(shape[0] * shape[1], -1)
                     ).reshape(shape)
+                    # if self.args.use_rag:
+                    #     action = test_data.inverse_transform(
+                    #         action.reshape(shape[0] * shape[1], -1)
+                    #     ).reshape(shape)
                     batch_y = test_data.inverse_transform(
                         batch_y.reshape(shape[0] * shape[1], -1)
                     ).reshape(shape)
 
                 outputs = outputs[:, :, f_dim:]
+                # if self.args.use_rag:
+                #     outputs = outputs + action
                 batch_y = batch_y[:, :, f_dim:]
 
                 pred = outputs
