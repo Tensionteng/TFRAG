@@ -3,6 +3,7 @@ import torch.nn as nn
 import faiss
 import torch.nn.functional as F
 import numpy as np
+from utils.tools import visual
 
 try:
     import faiss.contrib.torch_utils
@@ -34,6 +35,7 @@ class MemoryBankWithRetrieval:
         self.faiss_dim = seq_len * dim
         if use_gpu:
             res = faiss.StandardGpuResources()
+            res.setDefaultNullStreamAllDevices()
             config = faiss.GpuIndexFlatConfig()
             config.device = gpu_index
             # 使用 GpuIndexFlatL2，支持直接操作 GPU 上的数据
@@ -55,27 +57,33 @@ class MemoryBankWithRetrieval:
         """
 
         num_batches = len(dataset_loader)
+        x_store_list = []
         y_store_list = []
         x_mark_store_list = []
         y_mark_store_list = []
         for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(
             dataset_loader
         ):
-            batch_x = batch_x.float().to(self.device).detach()
+            batch_x = batch_x.float()
             batch_y = batch_y.float()
             batch_x_mark = batch_x_mark.float()
             batch_y_mark = batch_y_mark.float()
 
+            x_store_list.append(batch_x)
             y_store_list.append(batch_y[:, -self.pred_len :, :])
             x_mark_store_list.append(batch_x_mark)
             y_mark_store_list.append(batch_y_mark)
 
-            self.update(batch_x)
 
             print(
                 f"Processing batch {i + 1}/{num_batches} for memory bank...",
                 end="\r",
             )
+
+        if x_store_list:
+            accumulated_x = torch.cat(x_store_list, dim=0).to(self.device)
+            self.update(accumulated_x)
+            del accumulated_x
 
         self.y_store = torch.cat(y_store_list, dim=0).to(self.device)
         self.x_mark_store = torch.cat(x_mark_store_list, dim=0).to(self.device)
@@ -83,6 +91,20 @@ class MemoryBankWithRetrieval:
         print(
             f"Memory bank built successfully. Index size: {self.index.ntotal}, Store size: {len(self.y_store)}"
         )
+
+        del (
+            x_store_list,
+            y_store_list,
+            x_mark_store_list,
+            y_mark_store_list,
+        )
+
+        assert (
+            self.index.ntotal
+            == len(self.y_store)
+            == len(self.x_mark_store)
+            == len(self.y_mark_store)
+        ), "索引数量与数据存储不匹配"
 
     def update(self, x: torch.Tensor):
         """
@@ -92,7 +114,9 @@ class MemoryBankWithRetrieval:
             x (Tensor): Input sequence, shape (total_samples, seq_len, dim).
         """
         total_samples = x.size(0)
-        x_flat = x.view(total_samples, -1)  # (total_samples, seq_len * dim)
+        x_flat = x.view(
+            total_samples, -1
+        ).contiguous()  # (total_samples, seq_len * dim)
 
         if self.use_gpu:
             # 直接添加 GPU 上的数据
@@ -117,7 +141,7 @@ class MemoryBankWithRetrieval:
         batch_size, seq_len, dim = query.size()
 
         query_flat = (
-            query.view(batch_size, -1).to(self.device).detach()
+            query.view(batch_size, -1).contiguous().to(self.device).detach()
         )  # (batch_size, seq_len * dim)
 
         # 检索 top-k 相似向量
@@ -126,13 +150,10 @@ class MemoryBankWithRetrieval:
         )
 
         embeddings = embeddings.reshape(batch_size, k, seq_len, self.dim)
-
-        # 将 indices 转换为张量，并从 y_store 中获取对应的 y
-        indices_tensor = (
-            indices.to(self.device)
-            if self.use_gpu
-            else torch.tensor(indices, dtype=torch.long, device=self.y_store.device)
-        )
+        assert indices.max() < len(
+            self.y_store
+        ), f"索引越界, 最大索引为 {indices.max()}, 但存储长度为 {len(self.y_store)}"
+        indices_tensor = indices if self.use_gpu else indices.cpu().numpy()
 
         topk_y_gt = self.y_store[
             indices_tensor

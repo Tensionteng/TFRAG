@@ -48,6 +48,28 @@ class Model(nn.Module):
             ],
             norm_layer=torch.nn.LayerNorm(configs.d_model),
         )
+        self.dist_encoder = Encoder(
+            [
+                EncoderLayer(
+                    AttentionLayer(
+                        FullAttention(
+                            False,
+                            configs.factor,
+                            attention_dropout=configs.dropout,
+                            output_attention=False,
+                        ),
+                        configs.d_model,
+                        configs.n_heads,
+                    ),
+                    configs.d_model,
+                    configs.d_ff,
+                    dropout=configs.dropout,
+                    activation=configs.activation,
+                )
+                for l in range(configs.e_layers)
+            ],
+            norm_layer=torch.nn.LayerNorm(configs.d_model),
+        )
         # Decoder
         if (
             self.task_name == "long_term_forecast"
@@ -64,25 +86,28 @@ class Model(nn.Module):
             )
             self.action_mean_cat = nn.Sequential(
                 nn.Linear(configs.pred_len * 2, configs.pred_len, bias=False),
-                nn.Tanh(),
+                # nn.Tanh(),
+            )
+            self.action_logstd_cat = nn.Sequential(
+                nn.Linear(configs.pred_len * 2, configs.pred_len, bias=False),
+                nn.Softplus(),
             )
             # 均值初始均值为output和gt之间的差值
-            self.action_mean[0].weight = nn.Parameter(torch.eye(configs.pred_len) * 0.5)
+            self.action_mean[0].weight = nn.Parameter(torch.eye(configs.pred_len))
             self.action_mean[0].bias = nn.Parameter(torch.zeros(configs.pred_len))
-            self.action_mean_cat[0].weight = nn.Parameter(
-                torch.cat(
-                    [
-                        torch.eye(configs.pred_len) * -1.0,
-                        torch.eye(configs.pred_len),
-                    ],
-                    dim=1,
-                )
-            )
-
+            # self.action_mean_cat[0].weight = nn.Parameter(
+            #     torch.cat(
+            #         [
+            #             torch.eye(configs.pred_len) * -1.0,
+            #             torch.eye(configs.pred_len),
+            #         ],
+            #         dim=1,
+            #     )
+            # )
             # 初始标准差不能太大
-            self.action_logstd_cat = nn.Parameter(
-                torch.zeros(1, configs.pred_len, configs.enc_in) - 1.0
-            )
+            # self.action_logstd_cat = nn.Parameter(
+            #     torch.zeros(1, configs.pred_len, configs.enc_in) - 1.0
+            # )
 
         if self.task_name == "imputation":
             self.projection = nn.Linear(configs.d_model, configs.seq_len, bias=True)
@@ -104,17 +129,16 @@ class Model(nn.Module):
         action_logstd = self.action_logstd(x_enc).permute(0, 2, 1)[:, :, :N]
         action_logstd = torch.clamp(action_logstd, min=-5, max=-1)
         action_std = torch.exp(action_logstd)  # [B, L, D]
-        if torch.isnan(action_std).any() or torch.isinf(action_std).any():
-            print("action_std 中有无效值")
-        if (action_std <= 0).any():
-            print("标准差非正")
+        
         return torch.distributions.Normal(action_mean, action_std)
 
     def get_dist_cat(self, x):
         _, _, N = x.shape
         x = x.permute(0, 2, 1)  # [B, L, D] -> [B, D, L]
         action_mean = self.action_mean_cat(x).permute(0, 2, 1)[:, :, :N]
-        action_std = torch.exp(self.action_logstd_cat)
+        action_logstd = self.action_logstd_cat(x).permute(0, 2, 1)[:, :, :N]
+        action_logstd = torch.clamp(action_logstd, min=-5, max=-1)
+        action_std = torch.exp(action_logstd)
 
         return torch.distributions.Normal(action_mean, action_std)
 

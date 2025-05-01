@@ -99,8 +99,8 @@ class Model(nn.Module):
                 nn.Linear(configs.pred_len, configs.pred_len, bias=True),
                 nn.Softplus(),
             )
-            # self.action_mean[0].weight = nn.Parameter(torch.eye(configs.pred_len))
-            # self.action_mean[0].bias = nn.Parameter(torch.zeros(configs.pred_len))
+            self.action_mean[0].weight = nn.Parameter(torch.eye(configs.pred_len))
+            self.action_mean[0].bias = nn.Parameter(torch.zeros(configs.pred_len))
         elif self.task_name == "imputation" or self.task_name == "anomaly_detection":
             self.head = FlattenHead(
                 configs.enc_in,
@@ -125,7 +125,7 @@ class Model(nn.Module):
         x_enc = x_enc.permute(0, 2, 1)  # [B, L, D] -> [B, D, L]
         action_mean = self.action_mean(x_enc).permute(0, 2, 1)[:, :, :N]
         action_logstd = self.action_logstd(x_enc).permute(0, 2, 1)[:, :, :N]
-        action_logstd = torch.clamp(action_logstd, max=-1)
+        action_logstd = torch.clamp(action_logstd, min=-5, max=-1)
         action_std = torch.exp(action_logstd)  # [B, L, D]
 
         action_mean = action_mean * (
@@ -134,10 +134,6 @@ class Model(nn.Module):
         action_mean = action_mean + (
             means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
         )
-        if torch.isnan(action_std).any() or torch.isinf(action_std).any():
-            print("action_std 中有无效值")
-        if (action_std <= 0).any():
-            print("标准差非正")
 
         return torch.distributions.Normal(action_mean, action_std)
 

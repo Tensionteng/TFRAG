@@ -25,6 +25,7 @@ python -u run.py \
   --itr 1 \
   --loss 'MSE' \
   --lradj 'type3' \
+  --n_heads 2 \
   --use_rag
 
 # python -u run.py \
@@ -51,7 +52,7 @@ python -u run.py \
 #   --d_ff 128 \
 #   --itr 1  \
 #   --lradj 'type3' \
-#   --use_rag
+  # --use_rag
 
 # python -u run.py \
 #   --task_name long_term_forecast \
@@ -77,7 +78,7 @@ python -u run.py \
 #   --d_ff 128 \
 #   --itr 1 \
 #   --lradj 'type3' \
-#   --use_rag
+  # --use_rag
 
 # python -u run.py \
 #   --task_name long_term_forecast \
@@ -103,4 +104,4 @@ python -u run.py \
 #   --d_ff 128 \
 #   --itr 1 \
 #   --lradj 'type3' \
-#   --use_rag
+  # --use_rag

@@ -19,12 +19,12 @@ python -u run.py \
   --dec_in 862 \
   --c_out 862 \
   --des 'Exp' \
-  --d_model 256 \
-  --d_ff 256 \
+  --d_model 128 \
+  --d_ff 128 \
   --batch_size 16 \
   --itr 1 \
   --lradj 'type3' \
-  # --use_rag
+  --use_rag
 
 # python -u run.py \
 #   --task_name long_term_forecast \

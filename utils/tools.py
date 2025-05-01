@@ -205,21 +205,30 @@ def cal_rfft(signal, freq_ratio=0.1):
 def mse_reward_func(output, adjusted_output, gt):
     mse_output = ((output - gt) ** 2).mean(dim=(1, 2))
     mse_adjusted = ((adjusted_output - gt) ** 2).mean(dim=(1, 2))
-    return torch.where(
-        mse_adjusted < mse_output,
-        torch.tensor(1.0, device=output.device),
-        torch.tensor(0.0, device=output.device),
-    )
+    # mse_output = (output - gt) ** 2
+    # mse_adjusted = (adjusted_output - gt) ** 2
+    # return torch.where(
+    #     mse_adjusted < mse_output,
+    #     torch.tensor(1.0, device=output.device),
+    #     torch.tensor(0.0, device=output.device),
+    # )
+    return mse_output - mse_adjusted
 
 
 def mae_reward_func(output, adjusted_output, gt):
     mae_output = torch.abs(output - gt).mean(dim=(1, 2))
     mae_adjusted = torch.abs(adjusted_output - gt).mean(dim=(1, 2))
-    return torch.where(
-        mae_adjusted < mae_output,
-        torch.tensor(1.0, device=output.device),
-        torch.tensor(0.0, device=output.device),
-    )
+    # mae_output = torch.abs(output - gt)
+    # mae_adjusted = torch.abs(adjusted_output - gt)
+    # return torch.where(
+    #     mae_adjusted < mae_output,
+    #     torch.tensor(1.0, device=output.device),
+    #     torch.tensor(0.0, device=output.device),
+    # )
+    return mae_output - mae_adjusted
+
+def frequcncy_reward_func(output, adjusted_output, gt, high_freq_cutoff_ratio=0.25):
+    return torch.abs(output - gt).mean(dim=(1, 2)) - torch.abs(adjusted_output - gt).mean(dim=(1, 2))
     
 
 
