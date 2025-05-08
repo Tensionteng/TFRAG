@@ -85,16 +85,18 @@ class Model(nn.Module):
                 nn.Softplus(),
             )
             self.action_mean_cat = nn.Sequential(
-                nn.Linear(configs.pred_len * 2, configs.pred_len, bias=False),
-                # nn.Tanh(),
+                nn.Linear(configs.pred_len * 2, configs.pred_len, bias=True),
+                nn.Tanh(),
+                nn.Linear(configs.pred_len, configs.pred_len, bias=True),
+                nn.Tanh(),
             )
             self.action_logstd_cat = nn.Sequential(
                 nn.Linear(configs.pred_len * 2, configs.pred_len, bias=False),
                 nn.Softplus(),
             )
             # 均值初始均值为output和gt之间的差值
-            self.action_mean[0].weight = nn.Parameter(torch.eye(configs.pred_len))
-            self.action_mean[0].bias = nn.Parameter(torch.zeros(configs.pred_len))
+            # self.action_mean[0].weight = nn.Parameter(torch.eye(configs.pred_len))
+            # self.action_mean[0].bias = nn.Parameter(torch.zeros(configs.pred_len))
             # self.action_mean_cat[0].weight = nn.Parameter(
             #     torch.cat(
             #         [
@@ -121,24 +123,33 @@ class Model(nn.Module):
             )
 
     def get_dist(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
-
         _, _, N = x_enc.shape
         x_enc = x_enc.permute(0, 2, 1)  # [B, L, D] -> [B, D, L]
 
+        # x_enc = self.encode_out
         action_mean = self.action_mean(x_enc).permute(0, 2, 1)[:, :, :N]
         action_logstd = self.action_logstd(x_enc).permute(0, 2, 1)[:, :, :N]
         action_logstd = torch.clamp(action_logstd, min=-5, max=-1)
         action_std = torch.exp(action_logstd)  # [B, L, D]
-        
+        # action_std = torch.clamp(action_std, min=0.1, max=10.0)
+
         return torch.distributions.Normal(action_mean, action_std)
 
     def get_dist_cat(self, x):
+        # means = x.mean(1, keepdim=True).detach()
+        # x = x - means
+        # stdev = torch.sqrt(torch.var(x, dim=1, keepdim=True, unbiased=False) + 1e-5)
+        # x = x / stdev
         _, _, N = x.shape
         x = x.permute(0, 2, 1)  # [B, L, D] -> [B, D, L]
         action_mean = self.action_mean_cat(x).permute(0, 2, 1)[:, :, :N]
         action_logstd = self.action_logstd_cat(x).permute(0, 2, 1)[:, :, :N]
-        action_logstd = torch.clamp(action_logstd, min=-5, max=-1)
+        # action_logstd = torch.clamp(action_logstd, min=-5, max=-1)
         action_std = torch.exp(action_logstd)
+        action_std = torch.clamp(action_std, max=0.3)
+
+        # action_mean = action_mean * (stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
+        # action_mean = action_mean + (means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
 
         return torch.distributions.Normal(action_mean, action_std)
 
@@ -154,6 +165,7 @@ class Model(nn.Module):
         # Embedding
         enc_out = self.enc_embedding(x_enc, x_mark_enc)
         enc_out, attns = self.encoder(enc_out, attn_mask=None)
+        self.encode_out = enc_out
 
         dec_out = self.projection(enc_out).permute(0, 2, 1)[:, :, :N]
         # De-Normalization from Non-stationary Transformer

@@ -7,6 +7,7 @@ from utils.tools import (
     visual,
     mae_reward_func,
     mse_reward_func,
+    frequcncy_reward_func,
     visual_similar,
     visual_adjustment,
 )
@@ -177,12 +178,167 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                             self.device
                         )
 
+                        loss = criterion(outputs, batch_y)
+
                         if self.args.use_rag:
-                            loss = criterion(
-                                outputs, batch_y, trend_weight=0.1, freq_weight=0.1
+                            (
+                                similar_seqs,
+                                similar_seqs_mark_x,
+                                similar_seqs_gt,
+                                distances,
+                            ) = self.memory_bank.retrieve_similar(
+                                batch_x,
+                                k=5,
                             )
-                        else:
-                            loss = criterion(outputs, batch_y)
+
+                            # 可视化检索结果，前三相似的序列和gt高度重叠
+                            # if similar_seqs is not None and i % 20 == 0:
+                            #     input = batch_x.detach().cpu().numpy()
+                            #     gt = batch_y.detach().cpu().numpy()
+                            #     similar_x = similar_seqs.detach().cpu().numpy()
+                            #     similar_gt = similar_seqs_gt.detach().cpu().numpy()
+                            #     real = np.concatenate(
+                            #         (input[0, :, -2], gt[0, :, -2]), axis=0
+                            #     )
+                            #     similar = np.concatenate(
+                            #         (
+                            #             similar_x[0, :, :, -2],
+                            #             similar_gt[0, :, :, -2],
+                            #         ),
+                            #         axis=1,
+                            #     )
+                            #     visual_similar(
+                            #         real,
+                            #         similar,
+                            #         os.path.join("./similar", str(i) + ".png"),
+                            #     )
+
+                            batch_size, k, seq_len, dim = similar_seqs.size()
+                            _, _, pred_len, _ = similar_seqs_gt.size()
+                            _, _, _, x_mark_dim = similar_seqs_mark_x.size()
+
+                            d_min = distances.min(dim=1, keepdim=True)[0]
+                            d_max = distances.max(dim=1, keepdim=True)[0]
+                            weights = (distances - d_min) / (d_max - d_min + 1e-4)
+                            weights = torch.exp(-weights)
+                            weights = F.softmax(weights, dim=1)
+
+                            # 计算加权平均
+                            similar_seqs_gt = torch.sum(
+                                weights.unsqueeze(-1).unsqueeze(-1) * similar_seqs_gt,
+                                dim=1,
+                            )
+
+                            # diff版本
+                            diff_y = similar_seqs_gt - (
+                                # 2.0 * outputs - 1.0 * outputs.detach()
+                                outputs
+                            )
+                            # dist = self.model.get_dist(diff_y, None, None, None)
+
+                            # concat版本
+                            dist = self.model.get_dist_cat(
+                                torch.cat([outputs, similar_seqs_gt], dim=1)
+                            )
+
+                            num_samples = 16
+                            log_probs = []
+                            rewards = []
+                            adjustment_limitation = []
+                            # n次采样
+                            for j in range(num_samples):
+                                action = dist.rsample()
+                                log_prob = dist.log_prob(action)
+                                # 平均池化，每3步做平均
+                                action = F.avg_pool1d(
+                                    action.permute(0, 2, 1),
+                                    kernel_size=3,
+                                    stride=1,
+                                    padding=1,
+                                ).permute(0, 2, 1)
+                                adjusted_ouput = outputs + action
+                                reward = (
+                                    mae_reward_func(outputs, adjusted_ouput, batch_y)
+                                    + mse_reward_func(outputs, adjusted_ouput, batch_y)
+                                    # + frequcncy_reward_func(
+                                    #     outputs, adjusted_ouput, batch_y
+                                    # )
+                                )
+                                # 可视化调整后的结果
+                                if i % 100 == 0 and j % 5 == 0:
+                                    input = batch_x.detach().cpu().numpy()
+                                    y = batch_y.detach().cpu().numpy()
+                                    pred = outputs.detach().cpu().numpy()
+                                    ad_pred = adjusted_ouput.detach().cpu().numpy()
+                                    s_gt = similar_seqs_gt.detach().cpu().numpy()
+                                    mean = dist.mean.detach().cpu().numpy()
+                                    diff = diff_y.detach().cpu().numpy()
+                                    action_clone = action.detach().cpu().numpy()
+                                    gt = np.concatenate(
+                                        (input[0, :, -1], y[0, :, -1]), axis=0
+                                    )
+                                    s_gt = np.concatenate(
+                                        (input[0, :, -1], s_gt[0, :, -1]), axis=0
+                                    )
+                                    pd = np.concatenate(
+                                        (input[0, :, -1], pred[0, :, -1]), axis=0
+                                    )
+                                    ad = np.concatenate(
+                                        (input[0, :, -1], ad_pred[0, :, -1]), axis=0
+                                    )
+                                    mean = np.concatenate(
+                                        (input[0, :, -1], mean[0, :, -1]), axis=0
+                                    )
+                                    diff = np.concatenate(
+                                        (input[0, :, -1], diff[0, :, -1]), axis=0
+                                    )
+                                    action_clone = np.concatenate(
+                                        (input[0, :, -1], action_clone[0, :, -1]), axis=0
+                                    )
+
+                                    floder = f"./adjust_result/{self.args.model_id}_{self.args.model}/"
+                                    if not os.path.exists(floder):
+                                        os.makedirs(floder)
+
+                                    visual_adjustment(
+                                        gt,
+                                        s_gt,
+                                        pd,
+                                        ad,
+                                        mean,
+                                        diff,
+                                        action_clone,
+                                        name=os.path.join(
+                                            floder,
+                                            f"epoch{epoch}_{i}_iter{j}_reward_{reward.mean().item()}.png",
+                                        ),
+                                    )
+                                log_probs.append(log_prob)
+                                rewards.append(reward)
+                                # 调整值的L2范数，值在340左右
+                                adjustment_limitation.append(action.norm(p=2))
+
+                            log_probs = torch.stack(log_probs, dim=0)
+                            rewards = torch.stack(rewards, dim=0)
+
+                            mean = rewards.mean(dim=0, keepdim=True)
+                            std = rewards.std(dim=0, keepdim=True) + 1e-4
+                            advantages = (rewards - mean) / std  # 标准化奖励
+                            # per_setp_loss = torch.exp(
+                            #     log_probs - log_probs.detach()
+                            # ) * advantages
+                            per_setp_loss = log_probs * advantages.unsqueeze(-1).unsqueeze(
+                                -1
+                            )
+                            # 均值大小也在340左右
+                            rl_loss = -(
+                                per_setp_loss.mean()
+                                # - 0.001 * torch.mean(torch.stack(adjustment_limitation))
+                            )
+                            distill_loss = criterion(
+                                outputs, (outputs + dist.mean).detach()
+                            )
+                            loss = loss + rl_loss
 
                         train_loss.append(loss.item())
                 else:
@@ -248,14 +404,14 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                             # 2.0 * outputs - 1.0 * outputs.detach()
                             outputs
                         )
-                        dist = self.model.get_dist(diff_y, None, None, None)
+                        # dist = self.model.get_dist(diff_y, None, None, None)
 
                         # concat版本
-                        # dist = self.model.get_dist_cat(
-                        #     torch.cat([outputs, similar_seqs_gt], dim=1)
-                        # )
+                        dist = self.model.get_dist_cat(
+                            torch.cat([outputs, similar_seqs_gt], dim=1)
+                        )
 
-                        num_samples = 10
+                        num_samples = 16
                         log_probs = []
                         rewards = []
                         adjustment_limitation = []
@@ -271,9 +427,13 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                                 padding=2,
                             ).permute(0, 2, 1)
                             adjusted_ouput = outputs + action
-                            reward = mae_reward_func(
-                                outputs, adjusted_ouput, batch_y
-                            ) + mse_reward_func(outputs, adjusted_ouput, batch_y)
+                            reward = (
+                                mae_reward_func(outputs, adjusted_ouput, batch_y)
+                                + mse_reward_func(outputs, adjusted_ouput, batch_y)
+                                # + frequcncy_reward_func(
+                                #     outputs, adjusted_ouput, batch_y
+                                # )
+                            )
                             # 可视化调整后的结果
                             if i % 100 == 0 and j % 5 == 0:
                                 input = batch_x.detach().cpu().numpy()
@@ -337,14 +497,14 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         # per_setp_loss = torch.exp(
                         #     log_probs - log_probs.detach()
                         # ) * advantages
-                        per_setp_loss = log_probs * advantages.unsqueeze(-1).unsqueeze(-1)
+                        per_setp_loss = log_probs * advantages
                         # 均值大小也在340左右
                         rl_loss = -(
                             per_setp_loss.mean()
+                            # todo
                             # - 0.001 * torch.mean(torch.stack(adjustment_limitation))
                         )
-                        # loss = criterion(outputs + dist.mean, batch_y)
-                        loss = loss + criterion(outputs, adjusted_ouput.detach()) + rl_loss
+                        loss = loss + rl_loss
 
                     train_loss.append(loss.item())
 
@@ -447,56 +607,56 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 outputs = outputs[:, -self.args.pred_len :, :]
                 batch_y = batch_y[:, -self.args.pred_len :, :].to(self.device)
                 # if self.args.use_rag:
-                #     (
-                #         similar_seqs,
-                #         similar_seqs_mark_x,
-                #         similar_seqs_gt,
-                #         distances,
-                #     ) = self.memory_bank.retrieve_similar(
-                #         batch_x,
-                #         k=5,
+                # (
+                #     similar_seqs,
+                #     similar_seqs_mark_x,
+                #     similar_seqs_gt,
+                #     distances,
+                # ) = self.memory_bank.retrieve_similar(
+                #     batch_x,
+                #     k=5,
+                # )
+
+                # if similar_seqs is not None and i % 20 == 0:
+                #     input = batch_x.detach().cpu().numpy()
+                #     gt = batch_y.detach().cpu().numpy()
+                #     similar_x = similar_seqs.detach().cpu().numpy()
+                #     similar_gt = similar_seqs_gt.detach().cpu().numpy()
+                #     real = np.concatenate((input[0, :, -1], gt[0, :, -1]), axis=0)
+                #     similar = np.concatenate(
+                #         (
+                #             similar_x[0, :, :, -1],
+                #             similar_gt[0, :, :, -1],
+                #         ),
+                #         axis=1,
+                #     )
+                #     visual_similar(
+                #         real,
+                #         similar,
+                #         os.path.join("test_similar", str(i) + ".png"),
                 #     )
 
-                #     if similar_seqs is not None and i % 20 == 0:
-                #         input = batch_x.detach().cpu().numpy()
-                #         gt = batch_y.detach().cpu().numpy()
-                #         similar_x = similar_seqs.detach().cpu().numpy()
-                #         similar_gt = similar_seqs_gt.detach().cpu().numpy()
-                #         real = np.concatenate((input[0, :, -1], gt[0, :, -1]), axis=0)
-                #         similar = np.concatenate(
-                #             (
-                #                 similar_x[0, :, :, -1],
-                #                 similar_gt[0, :, :, -1],
-                #             ),
-                #             axis=1,
-                #         )
-                #         visual_similar(
-                #             real,
-                #             similar,
-                #             os.path.join(folder_path, str(i) + "_ref.png"),
-                #         )
+                # d_min = distances.min(dim=1, keepdim=True)[0]
+                # d_max = distances.max(dim=1, keepdim=True)[0]
+                # weights = (distances - d_min) / (d_max - d_min + 1e-8)
+                # weights = torch.exp(-weights)
+                # weights = F.softmax(weights, dim=1)
 
-                #     d_min = distances.min(dim=1, keepdim=True)[0]
-                #     d_max = distances.max(dim=1, keepdim=True)[0]
-                #     weights = (distances - d_min) / (d_max - d_min + 1e-8)
-                #     weights = torch.exp(-weights)
-                #     weights = F.softmax(weights, dim=1)
+                # # 计算加权平均
+                # similar_seqs_gt = torch.sum(
+                #     weights.unsqueeze(-1).unsqueeze(-1) * similar_seqs_gt,
+                #     dim=1,
+                # )
 
-                #     # 计算加权平均
-                #     similar_seqs_gt = torch.sum(
-                #         weights.unsqueeze(-1).unsqueeze(-1) * similar_seqs_gt,
-                #         dim=1,
-                #     )
-
-                #     diff_y = similar_seqs_gt - outputs
-                #     dist = self.model.get_dist(diff_y, None, None, None)
-                #     action = dist.mean
-                #     action = F.avg_pool1d(
-                #         action.permute(0, 2, 1),
-                #         kernel_size=5,
-                #         stride=1,
-                #         padding=2,
-                #     ).permute(0, 2, 1)
+                # diff_y = similar_seqs_gt - outputs
+                # dist = self.model.get_dist(diff_y, None, None, None)
+                # action = dist.mean
+                # action = F.avg_pool1d(
+                #     action.permute(0, 2, 1),
+                #     kernel_size=5,
+                #     stride=1,
+                #     padding=2,
+                # ).permute(0, 2, 1)
                 outputs = outputs.detach().cpu().numpy()
                 batch_y = batch_y.detach().cpu().numpy()
                 if test_data.scale and self.args.inverse:

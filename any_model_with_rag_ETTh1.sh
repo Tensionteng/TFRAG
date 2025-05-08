@@ -1,4 +1,4 @@
-model_name=PatchTST
+model_name=iTransformer
 
 python -u run.py \
   --task_name long_term_forecast \
@@ -52,7 +52,7 @@ python -u run.py \
 #   --d_ff 128 \
 #   --itr 1  \
 #   --lradj 'type3' \
-  # --use_rag
+#   --use_rag
 
 # python -u run.py \
 #   --task_name long_term_forecast \
@@ -78,7 +78,7 @@ python -u run.py \
 #   --d_ff 128 \
 #   --itr 1 \
 #   --lradj 'type3' \
-  # --use_rag
+#   --use_rag
 
 # python -u run.py \
 #   --task_name long_term_forecast \
@@ -104,4 +104,4 @@ python -u run.py \
 #   --d_ff 128 \
 #   --itr 1 \
 #   --lradj 'type3' \
-  # --use_rag
+#   --use_rag

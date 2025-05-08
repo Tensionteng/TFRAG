@@ -203,33 +203,50 @@ def cal_rfft(signal, freq_ratio=0.1):
 
 
 def mse_reward_func(output, adjusted_output, gt):
-    mse_output = ((output - gt) ** 2).mean(dim=(1, 2))
-    mse_adjusted = ((adjusted_output - gt) ** 2).mean(dim=(1, 2))
-    # mse_output = (output - gt) ** 2
-    # mse_adjusted = (adjusted_output - gt) ** 2
-    # return torch.where(
-    #     mse_adjusted < mse_output,
-    #     torch.tensor(1.0, device=output.device),
-    #     torch.tensor(0.0, device=output.device),
-    # )
+    # mse_output = ((output - gt) ** 2).mean(dim=(1, 2))
+    # mse_adjusted = ((adjusted_output - gt) ** 2).mean(dim=(1, 2))
+    mse_output = (output - gt) ** 2
+    mse_adjusted = (adjusted_output - gt) ** 2
+    return torch.where(
+        mse_adjusted < mse_output,
+        torch.tensor(1.0, device=output.device),
+        torch.tensor(0.0, device=output.device),
+    )
     return mse_output - mse_adjusted
 
 
 def mae_reward_func(output, adjusted_output, gt):
-    mae_output = torch.abs(output - gt).mean(dim=(1, 2))
-    mae_adjusted = torch.abs(adjusted_output - gt).mean(dim=(1, 2))
-    # mae_output = torch.abs(output - gt)
-    # mae_adjusted = torch.abs(adjusted_output - gt)
-    # return torch.where(
-    #     mae_adjusted < mae_output,
-    #     torch.tensor(1.0, device=output.device),
-    #     torch.tensor(0.0, device=output.device),
-    # )
+    # mae_output = torch.abs(output - gt).mean(dim=(1, 2))
+    # mae_adjusted = torch.abs(adjusted_output - gt).mean(dim=(1, 2))
+    mae_output = torch.abs(output - gt)
+    mae_adjusted = torch.abs(adjusted_output - gt)
+    return torch.where(
+        mae_adjusted < mae_output,
+        torch.tensor(1.0, device=output.device),
+        torch.tensor(0.0, device=output.device),
+    )
     return mae_output - mae_adjusted
 
-def frequcncy_reward_func(output, adjusted_output, gt, high_freq_cutoff_ratio=0.25):
-    return torch.abs(output - gt).mean(dim=(1, 2)) - torch.abs(adjusted_output - gt).mean(dim=(1, 2))
-    
+
+# 这个函数会导致seq_len维度发生变化，不好和mse和mae reward fn在时间步级别直接相加，item级别无影响
+def frequcncy_reward_func(output, adjusted_output, gt, high_freq_cutoff_ratio=0.2):
+    # 假设时间在 dim=1
+    fft_output = torch.fft.rfft(output, dim=1)
+    fft_adjusted = torch.fft.rfft(adjusted_output, dim=1)
+    fft_gt = torch.fft.rfft(gt, dim=1)
+
+    seq_len_freq = fft_gt.shape[1]
+    cutoff_idx = int(seq_len_freq * high_freq_cutoff_ratio)
+
+    err_output_hf = (
+        torch.abs(fft_output[:, cutoff_idx:, :] - fft_gt[:, cutoff_idx:, :]) ** 2
+    ).mean(dim=(1, 2))
+
+    err_adjusted_hf = (
+        torch.abs(fft_adjusted[:, cutoff_idx:, :] - fft_gt[:, cutoff_idx:, :]) ** 2
+    ).mean(dim=(1, 2))
+
+    return err_output_hf - err_adjusted_hf
 
 
 def sample_bernoulli(weights, k):

@@ -5,7 +5,7 @@ python -u run.py \
   --is_training 1 \
   --root_path ./dataset/ETT-small/ \
   --data_path ETTh2.csv \
-  --model_id ETTh2_96_96_confidence \
+  --model_id ETTh2_96_96 \
   --model $model_name \
   --data ETTh2 \
   --features M \
