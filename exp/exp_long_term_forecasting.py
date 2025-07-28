@@ -37,7 +37,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 dim=args.enc_in,
                 pred_len=args.pred_len,
                 use_gpu=True,
-                gpu_index=1,
+                gpu_index=2,
             )
             self.num_retrieve = args.num_retrieve
 
@@ -241,7 +241,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                                 torch.cat([outputs, similar_seqs_gt], dim=1)
                             )
 
-                            num_samples = 16
+                            num_samples = 8
                             log_probs = []
                             rewards = []
                             adjustment_limitation = []
@@ -338,6 +338,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                             distill_loss = criterion(
                                 outputs, (outputs + dist.mean).detach()
                             )
+                            
                             loss = loss + rl_loss
 
                         train_loss.append(loss.item())
@@ -411,7 +412,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                             torch.cat([outputs, similar_seqs_gt], dim=1)
                         )
 
-                        num_samples = 16
+                        num_samples = 8
                         log_probs = []
                         rewards = []
                         adjustment_limitation = []
@@ -502,9 +503,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         rl_loss = -(
                             per_setp_loss.mean()
                             # todo
-                            # - 0.001 * torch.mean(torch.stack(adjustment_limitation))
+                            # - 0.01 * torch.mean(torch.stack(adjustment_limitation))
                         )
-                        loss = loss + rl_loss
+                        distill_loss = criterion(outputs, (outputs + dist.mean).detach())
+                        loss = self.args.gemma_1 * loss + self.args.gemma_2 * rl_loss
 
                     train_loss.append(loss.item())
 

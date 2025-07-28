@@ -346,6 +346,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num_retrieve", type=int, help="number of retrieve", default=5
     )
+    parser.add_argument("--gemma_1", type=float, default=0.5, help="gemma_1")
+    parser.add_argument("--gemma_2", type=float, default=0.5, help="gemma_2")
 
     args = parser.parse_args()
     if torch.cuda.is_available() and args.use_gpu:
@@ -388,7 +390,7 @@ if __name__ == "__main__":
         for ii in range(args.itr):
             # setting record of experiments
             exp = Exp(args)  # set experiments
-            setting = "{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_expand{}_dc{}_fc{}_eb{}_dt{}_{}_{}{}".format(
+            setting = "{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_expand{}_dc{}_fc{}_eb{}_dt{}_{}_{}{}_{}_{}".format(
                 args.task_name,
                 args.model_id,
                 args.model,
@@ -410,6 +412,8 @@ if __name__ == "__main__":
                 args.des,
                 ii,
                 "_rag" if args.use_rag else "",
+                args.gemma_1,
+                args.gemma_2,
             )
 
             print(
@@ -428,7 +432,7 @@ if __name__ == "__main__":
     else:
         exp = Exp(args)  # set experiments
         ii = 0
-        setting = "{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_expand{}_dc{}_fc{}_eb{}_dt{}_{}_{}{}".format(
+        setting = "{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_expand{}_dc{}_fc{}_eb{}_dt{}_{}_{}{}_{}_{}".format(
             args.task_name,
             args.model_id,
             args.model,
@@ -450,6 +454,8 @@ if __name__ == "__main__":
             args.des,
             ii,
             "_rag" if args.use_rag else "",
+            args.gemma_1,
+            args.gemma_2,
         )
 
         print(">>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<".format(setting))

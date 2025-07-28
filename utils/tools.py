@@ -137,10 +137,10 @@ def visual_adjustment(
         plt.plot(preds, label="Prediction", linewidth=2)
     if adjusted_preds is not None:
         plt.plot(adjusted_preds, label="Adjusted Prediction", linewidth=2)
-    if mean is not None:
-        plt.plot(mean, label="Mean", linewidth=2)
-    if diff is not None:
-        plt.plot(diff, label="Diff", linewidth=2)
+    # if mean is not None:
+    #     plt.plot(mean, label="Mean", linewidth=2)
+    # if diff is not None:
+    #     plt.plot(diff, label="Diff", linewidth=2)
     if action is not None:
         plt.plot(action, label="Action", linewidth=2)
     plt.legend()

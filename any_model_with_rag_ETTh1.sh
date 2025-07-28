@@ -1,4 +1,4 @@
-model_name=iTransformer
+model_name=DLinear
 
 python -u run.py \
   --task_name long_term_forecast \
@@ -12,7 +12,7 @@ python -u run.py \
   --seq_len 96 \
   --label_len 48 \
   --pred_len 96 \
-  --e_layers 2 \
+  --e_layers 1 \
   --d_layers 1 \
   --factor 3 \
   --enc_in 7 \
@@ -23,10 +23,44 @@ python -u run.py \
   --train_epochs 50 \
   --d_ff 128 \
   --itr 1 \
-  --loss 'MSE' \
-  --lradj 'type3' \
-  --n_heads 2 \
-  --use_rag
+  --lradj 'type1' \
+  --n_heads 1 \
+  --learning_rate 0.005 \
+  --batch_size 32 \
+  --gemma_1 0.2 \
+  --gemma_2 0.8 \
+
+
+python -u run.py \
+  --task_name long_term_forecast \
+  --is_training 1 \
+  --root_path ./dataset/ETT-small/ \
+  --data_path ETTh1.csv \
+  --model_id ETTh1_96_96 \
+  --model $model_name \
+  --data ETTh1 \
+  --features M \
+  --seq_len 96 \
+  --label_len 48 \
+  --pred_len 96 \
+  --e_layers 1 \
+  --d_layers 1 \
+  --factor 3 \
+  --enc_in 7 \
+  --dec_in 7 \
+  --c_out 7 \
+  --des 'Exp' \
+  --d_model 128 \
+  --train_epochs 50 \
+  --d_ff 128 \
+  --itr 1 \
+  --lradj 'type1' \
+  --n_heads 1 \
+  --learning_rate 0.005 \
+  --batch_size 32 \
+  --use_rag \
+  --gemma_1 0.8 \
+  --gemma_2 0.2 \
 
 # python -u run.py \
 #   --task_name long_term_forecast \
@@ -47,11 +81,14 @@ python -u run.py \
 #   --dec_in 7 \
 #   --c_out 7 \
 #   --des 'Exp' \
-#   --d_model 128 \
+#   --d_model 512 \
 #   --train_epochs 50 \
-#   --d_ff 128 \
+#   --d_ff 512 \
 #   --itr 1  \
-#   --lradj 'type3' \
+#   --lradj 'type1' \
+#   --n_heads 2 \
+#   --learning_rate 0.001 \
+#   --batch_size 16 \
 #   --use_rag
 
 # python -u run.py \
@@ -73,11 +110,14 @@ python -u run.py \
 #   --dec_in 7 \
 #   --c_out 7 \
 #   --des 'Exp' \
-#   --d_model 128 \
+#   --d_model 512 \
 #   --train_epochs 50 \
-#   --d_ff 128 \
+#   --d_ff 512 \
 #   --itr 1 \
-#   --lradj 'type3' \
+#   --lradj 'type4' \
+#   --n_heads 1 \
+#   --learning_rate 0.0005 \
+#   --batch_size 16 \
 #   --use_rag
 
 # python -u run.py \
@@ -104,4 +144,7 @@ python -u run.py \
 #   --d_ff 128 \
 #   --itr 1 \
 #   --lradj 'type3' \
+#   --n_heads 1 \
+#   --learning_rate 0.0005 \
+#   --batch_size 64 \
 #   --use_rag

@@ -170,3 +170,10 @@ environment.txt
 similar/
 adjust_result/
 test_similar/
+freq_result/
+
+freq_metric/
+
+simulated_metric_plots/
+simulated_metric_plots_styled/
+simulated_metric_plots_V3/

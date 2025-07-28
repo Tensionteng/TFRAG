@@ -86,26 +86,26 @@ class Model(nn.Module):
             )
             self.action_mean_cat = nn.Sequential(
                 nn.Linear(configs.pred_len * 2, configs.pred_len, bias=True),
-                nn.Tanh(),
-                nn.Linear(configs.pred_len, configs.pred_len, bias=True),
-                nn.Tanh(),
+                # nn.Tanh(),
+                # nn.Linear(configs.pred_len, configs.pred_len, bias=True),
+                # nn.Tanh(),
             )
             self.action_logstd_cat = nn.Sequential(
                 nn.Linear(configs.pred_len * 2, configs.pred_len, bias=False),
                 nn.Softplus(),
             )
             # 均值初始均值为output和gt之间的差值
-            # self.action_mean[0].weight = nn.Parameter(torch.eye(configs.pred_len))
-            # self.action_mean[0].bias = nn.Parameter(torch.zeros(configs.pred_len))
-            # self.action_mean_cat[0].weight = nn.Parameter(
-            #     torch.cat(
-            #         [
-            #             torch.eye(configs.pred_len) * -1.0,
-            #             torch.eye(configs.pred_len),
-            #         ],
-            #         dim=1,
-            #     )
-            # )
+            self.action_mean[0].weight = nn.Parameter(torch.eye(configs.pred_len))
+            self.action_mean[0].bias = nn.Parameter(torch.zeros(configs.pred_len))
+            self.action_mean_cat[0].weight = nn.Parameter(
+                torch.cat(
+                    [
+                        torch.eye(configs.pred_len) * -1.0,
+                        torch.eye(configs.pred_len),
+                    ],
+                    dim=1,
+                )
+            )
             # 初始标准差不能太大
             # self.action_logstd_cat = nn.Parameter(
             #     torch.zeros(1, configs.pred_len, configs.enc_in) - 1.0
@@ -146,7 +146,7 @@ class Model(nn.Module):
         action_logstd = self.action_logstd_cat(x).permute(0, 2, 1)[:, :, :N]
         # action_logstd = torch.clamp(action_logstd, min=-5, max=-1)
         action_std = torch.exp(action_logstd)
-        action_std = torch.clamp(action_std, max=0.3)
+        action_std = torch.clamp(action_std, max=0.05)
 
         # action_mean = action_mean * (stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
         # action_mean = action_mean + (means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
