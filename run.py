@@ -346,8 +346,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num_retrieve", type=int, help="number of retrieve", default=5
     )
-    parser.add_argument("--gemma_1", type=float, default=0.5, help="gemma_1")
-    parser.add_argument("--gemma_2", type=float, default=0.5, help="gemma_2")
+    parser.add_argument("--gamma_1", type=float, default=0.5, help="weight for base loss")
+    parser.add_argument("--gamma_2", type=float, default=0.5, help="weight for RL loss")
+    parser.add_argument("--num_rl_samples", type=int, default=8, help="number of RL samples for policy gradient")
 
     args = parser.parse_args()
     if torch.cuda.is_available() and args.use_gpu:
@@ -412,8 +413,8 @@ if __name__ == "__main__":
                 args.des,
                 ii,
                 "_rag" if args.use_rag else "",
-                args.gemma_1,
-                args.gemma_2,
+                args.gamma_1,
+                args.gamma_2,
             )
 
             print(

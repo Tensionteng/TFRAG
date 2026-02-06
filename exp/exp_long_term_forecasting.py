@@ -1,14 +1,15 @@
+"""
+Refactored Long-term Forecasting Experiment with RAG Plugin Support.
+
+This version uses the RAGPlugin architecture for cleaner code and easier maintenance.
+"""
+
 from data_provider.data_factory import data_provider
 from exp.exp_basic import Exp_Basic
-from models.Memory import MemoryBankWithRetrieval
 from utils.tools import (
     EarlyStopping,
     adjust_learning_rate,
     visual,
-    mae_reward_func,
-    mse_reward_func,
-    frequcncy_reward_func,
-    visual_similar,
     visual_adjustment,
 )
 from utils.metrics import metric
@@ -20,118 +21,115 @@ import os
 import time
 import warnings
 import numpy as np
-from utils.dtw_metric import dtw, accelerated_dtw
-from utils.augmentation import run_augmentation, run_augmentation_single
 from datetime import datetime
-from layers.Autoformer_EncDec import series_decomp
+
+from models.model_factory import create_model, unwrap_model
+from models.rag_plugin import RAGPlugin
 
 warnings.filterwarnings("ignore")
 
 
 class Exp_Long_Term_Forecast(Exp_Basic):
+    """
+    Long-term forecasting experiment class with optional RAG+RL enhancement.
+    
+    The RAG functionality is now handled by RAGPlugin, making this class
+    much cleaner and model-agnostic.
+    """
+    
     def __init__(self, args):
-        super(Exp_Long_Term_Forecast, self).__init__(args)
-        if args.use_rag:
-            self.memory_bank = MemoryBankWithRetrieval(
-                seq_len=args.seq_len,
-                dim=args.enc_in,
-                pred_len=args.pred_len,
-                use_gpu=True,
-                gpu_index=2,
-            )
-            self.num_retrieve = args.num_retrieve
-
+        super().__init__(args)
+        
     def _build_model(self):
-        model = self.model_dict[self.args.model].Model(self.args).float()
-
-        if self.args.use_multi_gpu and self.args.use_gpu:
-            model = nn.DataParallel(model, device_ids=self.args.device_ids)
+        """Build model using the factory."""
+        model = create_model(self.args)
         return model
 
     def _get_data(self, flag):
+        """Get data loader for the specified split."""
         data_set, data_loader = data_provider(self.args, flag)
         return data_set, data_loader
 
     def _select_optimizer(self):
-        model_optim = optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
-        return model_optim
+        """Select optimizer for training."""
+        model = unwrap_model(self.model)
+        return optim.Adam(model.parameters(), lr=self.args.learning_rate)
 
     def _select_criterion(self):
+        """Select loss function."""
         return nn.MSELoss()
 
-    def _rag_loss(self, pred, y_true, trend_weight=0.1, freq_weight=0.1):
-        # 原始 MSE 损失
-        mse = nn.MSELoss()(pred, y_true)
-        # 从 memory_bank 中检索相似序列
-        similar_seqs = self.memory_bank.get_similar_seqs()
-
-        # 计算趋势损失
-        trend_loss = self.memory_bank.compute_trend_loss(pred, similar_seqs)
-
-        # 计算频率损失
-        freq_loss = self.memory_bank.compute_frequency_loss(pred, similar_seqs)
-
-        # 总损失
-        total_loss = mse + trend_weight * trend_loss + freq_weight * freq_loss
-        return total_loss
-
     def vali(self, vali_data, vali_loader, criterion):
+        """Validation loop."""
         total_loss = []
         self.model.eval()
+        
         with torch.no_grad():
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(
                 vali_loader
             ):
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float()
-
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
 
-                # decoder input
+                # Decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len :, :]).float()
                 dec_inp = (
                     torch.cat([batch_y[:, : self.args.label_len, :], dec_inp], dim=1)
                     .float()
                     .to(self.device)
                 )
-                # encoder - decoder
+                
+                # Forward pass
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
-                        outputs = self.model(
-                            batch_x, batch_x_mark, dec_inp, batch_y_mark
+                        result = self.model(
+                            batch_x, batch_x_mark, dec_inp, batch_y_mark,
+                            batch_y=batch_y[:, -self.args.pred_len :, :].to(self.device) if self.args.use_rag else None
                         )
                 else:
-                    outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                    result = self.model(
+                        batch_x, batch_x_mark, dec_inp, batch_y_mark,
+                        batch_y=batch_y[:, -self.args.pred_len :, :].to(self.device) if self.args.use_rag else None
+                    )
+                
+                # Handle RAGPlugin output
+                if isinstance(result, dict):
+                    outputs = result['outputs']
+                else:
+                    outputs = result
+                    
                 f_dim = -1 if self.args.features == "MS" else 0
                 outputs = outputs[:, -self.args.pred_len :, f_dim:]
                 batch_y = batch_y[:, -self.args.pred_len :, f_dim:].to(self.device)
 
-                pred = outputs.detach().cpu()
-                true = batch_y.detach().cpu()
-
                 loss = criterion(outputs, batch_y)
-
                 total_loss.append(loss.detach().cpu())
+                
         total_loss = np.average(total_loss)
         self.model.train()
         return total_loss
 
     def train(self, setting):
-
+        """Training loop with optional RAG+RL."""
         train_data, train_loader = self._get_data(flag="train")
         vali_data, vali_loader = self._get_data(flag="val")
         test_data, test_loader = self._get_data(flag="test")
 
-        if self.args.use_rag:
-            self.memory_bank.load_dataset(train_loader)
+        # Load memory bank if using RAG
+        if self.args.use_rag and isinstance(self.model, (RAGPlugin, nn.DataParallel)):
+            model_to_load = unwrap_model(self.model)
+            if isinstance(model_to_load, RAGPlugin):
+                print("[RAG] Loading training data into memory bank...")
+                model_to_load.load_memory_bank(train_loader)
 
+        # Create checkpoint directory
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
             os.makedirs(path)
 
         time_now = time.time()
-
         train_steps = len(train_loader)
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
@@ -147,17 +145,19 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
             self.model.train()
             epoch_time = time.time()
+            
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(
                 train_loader
             ):
                 iter_count += 1
                 model_optim.zero_grad()
+                
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
 
-                # decoder input
+                # Decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len :, :]).float()
                 dec_inp = (
                     torch.cat([batch_y[:, : self.args.label_len, :], dec_inp], dim=1)
@@ -165,351 +165,44 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     .to(self.device)
                 )
 
-                # encoder - decoder
+                # Forward pass
+                f_dim = -1 if self.args.features == "MS" else 0
+                target = batch_y[:, -self.args.pred_len :, f_dim:].to(self.device)
+                
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
-                        outputs = self.model(
-                            batch_x, batch_x_mark, dec_inp, batch_y_mark
+                        result = self.model(
+                            batch_x, batch_x_mark, dec_inp, batch_y_mark,
+                            batch_y=target
                         )
-
-                        f_dim = -1 if self.args.features == "MS" else 0
-                        outputs = outputs[:, -self.args.pred_len :, f_dim:]
-                        batch_y = batch_y[:, -self.args.pred_len :, f_dim:].to(
-                            self.device
-                        )
-
-                        loss = criterion(outputs, batch_y)
-
-                        if self.args.use_rag:
-                            (
-                                similar_seqs,
-                                similar_seqs_mark_x,
-                                similar_seqs_gt,
-                                distances,
-                            ) = self.memory_bank.retrieve_similar(
-                                batch_x,
-                                k=5,
-                            )
-
-                            # 可视化检索结果，前三相似的序列和gt高度重叠
-                            # if similar_seqs is not None and i % 20 == 0:
-                            #     input = batch_x.detach().cpu().numpy()
-                            #     gt = batch_y.detach().cpu().numpy()
-                            #     similar_x = similar_seqs.detach().cpu().numpy()
-                            #     similar_gt = similar_seqs_gt.detach().cpu().numpy()
-                            #     real = np.concatenate(
-                            #         (input[0, :, -2], gt[0, :, -2]), axis=0
-                            #     )
-                            #     similar = np.concatenate(
-                            #         (
-                            #             similar_x[0, :, :, -2],
-                            #             similar_gt[0, :, :, -2],
-                            #         ),
-                            #         axis=1,
-                            #     )
-                            #     visual_similar(
-                            #         real,
-                            #         similar,
-                            #         os.path.join("./similar", str(i) + ".png"),
-                            #     )
-
-                            batch_size, k, seq_len, dim = similar_seqs.size()
-                            _, _, pred_len, _ = similar_seqs_gt.size()
-                            _, _, _, x_mark_dim = similar_seqs_mark_x.size()
-
-                            d_min = distances.min(dim=1, keepdim=True)[0]
-                            d_max = distances.max(dim=1, keepdim=True)[0]
-                            weights = (distances - d_min) / (d_max - d_min + 1e-4)
-                            weights = torch.exp(-weights)
-                            weights = F.softmax(weights, dim=1)
-
-                            # 计算加权平均
-                            similar_seqs_gt = torch.sum(
-                                weights.unsqueeze(-1).unsqueeze(-1) * similar_seqs_gt,
-                                dim=1,
-                            )
-
-                            # diff版本
-                            diff_y = similar_seqs_gt - (
-                                # 2.0 * outputs - 1.0 * outputs.detach()
-                                outputs
-                            )
-                            # dist = self.model.get_dist(diff_y, None, None, None)
-
-                            # concat版本
-                            dist = self.model.get_dist_cat(
-                                torch.cat([outputs, similar_seqs_gt], dim=1)
-                            )
-
-                            num_samples = 8
-                            log_probs = []
-                            rewards = []
-                            adjustment_limitation = []
-                            # n次采样
-                            for j in range(num_samples):
-                                action = dist.rsample()
-                                log_prob = dist.log_prob(action)
-                                # 平均池化，每3步做平均
-                                action = F.avg_pool1d(
-                                    action.permute(0, 2, 1),
-                                    kernel_size=3,
-                                    stride=1,
-                                    padding=1,
-                                ).permute(0, 2, 1)
-                                adjusted_ouput = outputs + action
-                                reward = (
-                                    mae_reward_func(outputs, adjusted_ouput, batch_y)
-                                    + mse_reward_func(outputs, adjusted_ouput, batch_y)
-                                    # + frequcncy_reward_func(
-                                    #     outputs, adjusted_ouput, batch_y
-                                    # )
-                                )
-                                # 可视化调整后的结果
-                                if i % 100 == 0 and j % 5 == 0:
-                                    input = batch_x.detach().cpu().numpy()
-                                    y = batch_y.detach().cpu().numpy()
-                                    pred = outputs.detach().cpu().numpy()
-                                    ad_pred = adjusted_ouput.detach().cpu().numpy()
-                                    s_gt = similar_seqs_gt.detach().cpu().numpy()
-                                    mean = dist.mean.detach().cpu().numpy()
-                                    diff = diff_y.detach().cpu().numpy()
-                                    action_clone = action.detach().cpu().numpy()
-                                    gt = np.concatenate(
-                                        (input[0, :, -1], y[0, :, -1]), axis=0
-                                    )
-                                    s_gt = np.concatenate(
-                                        (input[0, :, -1], s_gt[0, :, -1]), axis=0
-                                    )
-                                    pd = np.concatenate(
-                                        (input[0, :, -1], pred[0, :, -1]), axis=0
-                                    )
-                                    ad = np.concatenate(
-                                        (input[0, :, -1], ad_pred[0, :, -1]), axis=0
-                                    )
-                                    mean = np.concatenate(
-                                        (input[0, :, -1], mean[0, :, -1]), axis=0
-                                    )
-                                    diff = np.concatenate(
-                                        (input[0, :, -1], diff[0, :, -1]), axis=0
-                                    )
-                                    action_clone = np.concatenate(
-                                        (input[0, :, -1], action_clone[0, :, -1]), axis=0
-                                    )
-
-                                    floder = f"./adjust_result/{self.args.model_id}_{self.args.model}/"
-                                    if not os.path.exists(floder):
-                                        os.makedirs(floder)
-
-                                    visual_adjustment(
-                                        gt,
-                                        s_gt,
-                                        pd,
-                                        ad,
-                                        mean,
-                                        diff,
-                                        action_clone,
-                                        name=os.path.join(
-                                            floder,
-                                            f"epoch{epoch}_{i}_iter{j}_reward_{reward.mean().item()}.png",
-                                        ),
-                                    )
-                                log_probs.append(log_prob)
-                                rewards.append(reward)
-                                # 调整值的L2范数，值在340左右
-                                adjustment_limitation.append(action.norm(p=2))
-
-                            log_probs = torch.stack(log_probs, dim=0)
-                            rewards = torch.stack(rewards, dim=0)
-
-                            mean = rewards.mean(dim=0, keepdim=True)
-                            std = rewards.std(dim=0, keepdim=True) + 1e-4
-                            advantages = (rewards - mean) / std  # 标准化奖励
-                            # per_setp_loss = torch.exp(
-                            #     log_probs - log_probs.detach()
-                            # ) * advantages
-                            per_setp_loss = log_probs * advantages.unsqueeze(-1).unsqueeze(
-                                -1
-                            )
-                            # 均值大小也在340左右
-                            rl_loss = -(
-                                per_setp_loss.mean()
-                                # - 0.001 * torch.mean(torch.stack(adjustment_limitation))
-                            )
-                            distill_loss = criterion(
-                                outputs, (outputs + dist.mean).detach()
-                            )
-                            
-                            loss = loss + rl_loss
-
-                        train_loss.append(loss.item())
                 else:
-                    outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                    result = self.model(
+                        batch_x, batch_x_mark, dec_inp, batch_y_mark,
+                        batch_y=target
+                    )
 
-                    f_dim = -1 if self.args.features == "MS" else 0
+                # Handle output based on whether RAG is used
+                if isinstance(result, dict):
+                    # RAGPlugin output
+                    outputs = result['outputs']
+                    loss = result.get('loss')
+                    if loss is None:
+                        loss = criterion(outputs, target)
+                    
+                    # Optional: visualization
+                    if 'dist' in result and i % 100 == 0:
+                        self._visualize_training(
+                            batch_x, target, result, epoch, i
+                        )
+                else:
+                    # Standard model output
+                    outputs = result
                     outputs = outputs[:, -self.args.pred_len :, f_dim:]
-                    batch_y = batch_y[:, -self.args.pred_len :, f_dim:].to(self.device)
+                    loss = criterion(outputs, target)
 
-                    loss = criterion(outputs, batch_y)
+                train_loss.append(loss.item())
 
-                    if self.args.use_rag:
-                        (
-                            similar_seqs,
-                            similar_seqs_mark_x,
-                            similar_seqs_gt,
-                            distances,
-                        ) = self.memory_bank.retrieve_similar(
-                            batch_x,
-                            k=5,
-                        )
-
-                        # 可视化检索结果，前三相似的序列和gt高度重叠
-                        # if similar_seqs is not None and i % 20 == 0:
-                        #     input = batch_x.detach().cpu().numpy()
-                        #     gt = batch_y.detach().cpu().numpy()
-                        #     similar_x = similar_seqs.detach().cpu().numpy()
-                        #     similar_gt = similar_seqs_gt.detach().cpu().numpy()
-                        #     real = np.concatenate(
-                        #         (input[0, :, -2], gt[0, :, -2]), axis=0
-                        #     )
-                        #     similar = np.concatenate(
-                        #         (
-                        #             similar_x[0, :, :, -2],
-                        #             similar_gt[0, :, :, -2],
-                        #         ),
-                        #         axis=1,
-                        #     )
-                        #     visual_similar(
-                        #         real,
-                        #         similar,
-                        #         os.path.join("./similar", str(i) + ".png"),
-                        #     )
-
-                        batch_size, k, seq_len, dim = similar_seqs.size()
-                        _, _, pred_len, _ = similar_seqs_gt.size()
-                        _, _, _, x_mark_dim = similar_seqs_mark_x.size()
-
-                        d_min = distances.min(dim=1, keepdim=True)[0]
-                        d_max = distances.max(dim=1, keepdim=True)[0]
-                        weights = (distances - d_min) / (d_max - d_min + 1e-4)
-                        weights = torch.exp(-weights)
-                        weights = F.softmax(weights, dim=1)
-
-                        # 计算加权平均
-                        similar_seqs_gt = torch.sum(
-                            weights.unsqueeze(-1).unsqueeze(-1) * similar_seqs_gt,
-                            dim=1,
-                        )
-
-                        # diff版本
-                        diff_y = similar_seqs_gt - (
-                            # 2.0 * outputs - 1.0 * outputs.detach()
-                            outputs
-                        )
-                        # dist = self.model.get_dist(diff_y, None, None, None)
-
-                        # concat版本
-                        dist = self.model.get_dist_cat(
-                            torch.cat([outputs, similar_seqs_gt], dim=1)
-                        )
-
-                        num_samples = 8
-                        log_probs = []
-                        rewards = []
-                        adjustment_limitation = []
-                        # n次采样
-                        for j in range(num_samples):
-                            action = dist.rsample()
-                            log_prob = dist.log_prob(action)
-                            # 平均池化，每3步做平均
-                            action = F.avg_pool1d(
-                                action.permute(0, 2, 1),
-                                kernel_size=5,
-                                stride=1,
-                                padding=2,
-                            ).permute(0, 2, 1)
-                            adjusted_ouput = outputs + action
-                            reward = (
-                                mae_reward_func(outputs, adjusted_ouput, batch_y)
-                                + mse_reward_func(outputs, adjusted_ouput, batch_y)
-                                # + frequcncy_reward_func(
-                                #     outputs, adjusted_ouput, batch_y
-                                # )
-                            )
-                            # 可视化调整后的结果
-                            if i % 100 == 0 and j % 5 == 0:
-                                input = batch_x.detach().cpu().numpy()
-                                y = batch_y.detach().cpu().numpy()
-                                pred = outputs.detach().cpu().numpy()
-                                ad_pred = adjusted_ouput.detach().cpu().numpy()
-                                s_gt = similar_seqs_gt.detach().cpu().numpy()
-                                mean = dist.mean.detach().cpu().numpy()
-                                diff = diff_y.detach().cpu().numpy()
-                                action_clone = action.detach().cpu().numpy()
-                                gt = np.concatenate(
-                                    (input[0, :, -1], y[0, :, -1]), axis=0
-                                )
-                                s_gt = np.concatenate(
-                                    (input[0, :, -1], s_gt[0, :, -1]), axis=0
-                                )
-                                pd = np.concatenate(
-                                    (input[0, :, -1], pred[0, :, -1]), axis=0
-                                )
-                                ad = np.concatenate(
-                                    (input[0, :, -1], ad_pred[0, :, -1]), axis=0
-                                )
-                                mean = np.concatenate(
-                                    (input[0, :, -1], mean[0, :, -1]), axis=0
-                                )
-                                diff = np.concatenate(
-                                    (input[0, :, -1], diff[0, :, -1]), axis=0
-                                )
-                                action_clone = np.concatenate(
-                                    (input[0, :, -1], action_clone[0, :, -1]), axis=0
-                                )
-
-                                floder = f"./adjust_result/{self.args.model_id}_{self.args.model}/"
-                                if not os.path.exists(floder):
-                                    os.makedirs(floder)
-
-                                visual_adjustment(
-                                    gt,
-                                    s_gt,
-                                    pd,
-                                    ad,
-                                    mean,
-                                    diff,
-                                    action_clone,
-                                    name=os.path.join(
-                                        floder,
-                                        f"epoch{epoch}_{i}_iter{j}_reward_{reward.mean().item()}.png",
-                                    ),
-                                )
-                            log_probs.append(log_prob)
-                            rewards.append(reward)
-                            # 调整值的L2范数，值在340左右
-                            adjustment_limitation.append(action.norm(p=2))
-
-                        log_probs = torch.stack(log_probs, dim=0)
-                        rewards = torch.stack(rewards, dim=0)
-
-                        mean = rewards.mean(dim=0, keepdim=True)
-                        std = rewards.std(dim=0, keepdim=True) + 1e-4
-                        advantages = (rewards - mean) / std  # 标准化奖励
-                        # per_setp_loss = torch.exp(
-                        #     log_probs - log_probs.detach()
-                        # ) * advantages
-                        per_setp_loss = log_probs * advantages
-                        # 均值大小也在340左右
-                        rl_loss = -(
-                            per_setp_loss.mean()
-                            # todo
-                            # - 0.01 * torch.mean(torch.stack(adjustment_limitation))
-                        )
-                        distill_loss = criterion(outputs, (outputs + dist.mean).detach())
-                        loss = self.args.gemma_1 * loss + self.args.gemma_2 * rl_loss
-
-                    train_loss.append(loss.item())
-
+                # Progress logging
                 if (i + 1) % 100 == 0:
                     print(
                         "\titers: {0}, epoch: {1} | loss: {2:.7f}".format(
@@ -528,6 +221,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     iter_count = 0
                     time_now = time.time()
 
+                # Backward pass
                 if self.args.use_amp:
                     scaler.scale(loss).backward()
                     scaler.step(model_optim)
@@ -546,6 +240,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     epoch + 1, train_steps, train_loss, vali_loss, test_loss
                 )
             )
+            
             early_stopping(vali_loss, self.model, path)
             if early_stopping.early_stop:
                 print("Early stopping")
@@ -553,22 +248,57 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
             adjust_learning_rate(model_optim, epoch + 1, self.args)
 
+        # Load best model
         best_model_path = path + "/" + "checkpoint.pth"
         self.model.load_state_dict(torch.load(best_model_path))
-
         return self.model
 
-    def test(self, setting, test=0):
+    def _visualize_training(self, batch_x, batch_y, result, epoch, iter_idx):
+        """Visualize training progress (optional)."""
+        if not hasattr(self, '_viz_counter'):
+            self._viz_counter = 0
+        self._viz_counter += 1
+        
+        if self._viz_counter % 5 != 0:
+            return
+            
+        outputs = result['outputs']
+        adjusted = result.get('adjusted_outputs', outputs)
+        dist = result.get('dist')
+        
+        # Convert to numpy for visualization
+        input_np = batch_x.detach().cpu().numpy()
+        y_np = batch_y.detach().cpu().numpy()
+        pred_np = outputs.detach().cpu().numpy()
+        adj_np = adjusted.detach().cpu().numpy()
+        
+        # Concatenate for visualization
+        gt = np.concatenate((input_np[0, :, -1], y_np[0, :, -1]), axis=0)
+        pd = np.concatenate((input_np[0, :, -1], pred_np[0, :, -1]), axis=0)
+        ad = np.concatenate((input_np[0, :, -1], adj_np[0, :, -1]), axis=0)
+        
+        folder = f"./adjust_result/{self.args.model_id}_{self.args.model}/"
+        if not os.path.exists(folder):
+            os.makedirs(folder)
+            
+        # Simplified visualization
+        import matplotlib.pyplot as plt
+        plt.figure(figsize=(12, 4))
+        plt.plot(gt, label='Ground Truth', alpha=0.7)
+        plt.plot(pd, label='Prediction', alpha=0.7)
+        plt.plot(ad, label='Adjusted', alpha=0.7)
+        plt.legend()
+        plt.savefig(os.path.join(folder, f"epoch{epoch}_{iter_idx}.png"))
+        plt.close()
 
+    def test(self, setting, test=0):
+        """Test loop."""
         folder_path = os.path.join("./test_results", setting)
         if not os.path.exists(folder_path):
             os.makedirs(folder_path, exist_ok=True)
 
         test_data, test_loader = self._get_data(flag="test")
-        # train_data, train_loader = self._get_data(flag="train")
-
-        # if self.args.use_rag:
-        #     self.memory_bank.load_dataset(train_loader)
+        
         if test:
             print("loading model")
             self.model.load_state_dict(
@@ -585,82 +315,38 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             ):
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
-
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
 
-                # decoder input
+                # Decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len :, :]).float()
                 dec_inp = (
                     torch.cat([batch_y[:, : self.args.label_len, :], dec_inp], dim=1)
                     .float()
                     .to(self.device)
                 )
-                # encoder - decoder
+                
+                # Forward pass
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
-                        outputs = self.model(
-                            batch_x, batch_x_mark, dec_inp, batch_y_mark
-                        )
+                        result = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                 else:
-                    outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                    result = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+
+                # Handle output
+                if isinstance(result, dict):
+                    outputs = result['outputs']
+                else:
+                    outputs = result
 
                 f_dim = -1 if self.args.features == "MS" else 0
                 outputs = outputs[:, -self.args.pred_len :, :]
                 batch_y = batch_y[:, -self.args.pred_len :, :].to(self.device)
-                # if self.args.use_rag:
-                # (
-                #     similar_seqs,
-                #     similar_seqs_mark_x,
-                #     similar_seqs_gt,
-                #     distances,
-                # ) = self.memory_bank.retrieve_similar(
-                #     batch_x,
-                #     k=5,
-                # )
-
-                # if similar_seqs is not None and i % 20 == 0:
-                #     input = batch_x.detach().cpu().numpy()
-                #     gt = batch_y.detach().cpu().numpy()
-                #     similar_x = similar_seqs.detach().cpu().numpy()
-                #     similar_gt = similar_seqs_gt.detach().cpu().numpy()
-                #     real = np.concatenate((input[0, :, -1], gt[0, :, -1]), axis=0)
-                #     similar = np.concatenate(
-                #         (
-                #             similar_x[0, :, :, -1],
-                #             similar_gt[0, :, :, -1],
-                #         ),
-                #         axis=1,
-                #     )
-                #     visual_similar(
-                #         real,
-                #         similar,
-                #         os.path.join("test_similar", str(i) + ".png"),
-                #     )
-
-                # d_min = distances.min(dim=1, keepdim=True)[0]
-                # d_max = distances.max(dim=1, keepdim=True)[0]
-                # weights = (distances - d_min) / (d_max - d_min + 1e-8)
-                # weights = torch.exp(-weights)
-                # weights = F.softmax(weights, dim=1)
-
-                # # 计算加权平均
-                # similar_seqs_gt = torch.sum(
-                #     weights.unsqueeze(-1).unsqueeze(-1) * similar_seqs_gt,
-                #     dim=1,
-                # )
-
-                # diff_y = similar_seqs_gt - outputs
-                # dist = self.model.get_dist(diff_y, None, None, None)
-                # action = dist.mean
-                # action = F.avg_pool1d(
-                #     action.permute(0, 2, 1),
-                #     kernel_size=5,
-                #     stride=1,
-                #     padding=2,
-                # ).permute(0, 2, 1)
+                
                 outputs = outputs.detach().cpu().numpy()
                 batch_y = batch_y.detach().cpu().numpy()
+                
+                # Inverse transform if needed
                 if test_data.scale and self.args.inverse:
                     shape = batch_y.shape
                     if outputs.shape[-1] != batch_y.shape[-1]:
@@ -670,33 +356,26 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     outputs = test_data.inverse_transform(
                         outputs.reshape(shape[0] * shape[1], -1)
                     ).reshape(shape)
-                    # if self.args.use_rag:
-                    #     action = test_data.inverse_transform(
-                    #         action.reshape(shape[0] * shape[1], -1)
-                    #     ).reshape(shape)
                     batch_y = test_data.inverse_transform(
                         batch_y.reshape(shape[0] * shape[1], -1)
                     ).reshape(shape)
 
                 outputs = outputs[:, :, f_dim:]
-                # if self.args.use_rag:
-                #     outputs = outputs + action.cpu().numpy()
                 batch_y = batch_y[:, :, f_dim:]
 
-                pred = outputs
-                true = batch_y
-
-                preds.append(pred)
-                trues.append(true)
+                preds.append(outputs)
+                trues.append(batch_y)
+                
+                # Visualization
                 if i % 20 == 0:
-                    input = batch_x.detach().cpu().numpy()
+                    input_np = batch_x.detach().cpu().numpy()
                     if test_data.scale and self.args.inverse:
-                        shape = input.shape
-                        input = test_data.inverse_transform(
-                            input.reshape(shape[0] * shape[1], -1)
+                        shape = input_np.shape
+                        input_np = test_data.inverse_transform(
+                            input_np.reshape(shape[0] * shape[1], -1)
                         ).reshape(shape)
-                    gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
-                    pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
+                    gt = np.concatenate((input_np[0, :, -1], batch_y[0, :, -1]), axis=0)
+                    pd = np.concatenate((input_np[0, :, -1], outputs[0, :, -1]), axis=0)
                     visual(gt, pd, os.path.join(folder_path, str(i) + ".png"))
 
         preds = np.concatenate(preds, axis=0)
@@ -706,33 +385,18 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         trues = trues.reshape(-1, trues.shape[-2], trues.shape[-1])
         print("test shape:", preds.shape, trues.shape)
 
-        # result save
+        # Save results
         folder_path = os.path.join("./results", setting + "/")
         if not os.path.exists(folder_path):
             os.makedirs(folder_path, exist_ok=True)
 
-        # dtw calculation
-        if self.args.use_dtw:
-            dtw_list = []
-            manhattan_distance = lambda x, y: np.abs(x - y)
-            for i in range(preds.shape[0]):
-                x = preds[i].reshape(-1, 1)
-                y = trues[i].reshape(-1, 1)
-                if i % 100 == 0:
-                    print("calculating dtw iter:", i)
-                d, _, _, _ = accelerated_dtw(x, y, dist=manhattan_distance)
-                dtw_list.append(d)
-            dtw = np.array(dtw_list).mean()
-        else:
-            dtw = "Not calculated"
-
         mae, mse, rmse, mape, mspe = metric(preds, trues)
-        print("mse:{}, mae:{}, dtw:{}".format(mse, mae, dtw))
+        print("mse:{}, mae:{}".format(mse, mae))
+        
         f = open("result_long_term_forecast.txt", "a")
         f.write(setting + "  \n")
-        f.write("mse:{}, mae:{}, dtw:{}".format(mse, mae, dtw))
-        f.write("\n")
-        f.write("\n")
+        f.write("mse:{}, mae:{}".format(mse, mae))
+        f.write("\n\n")
         f.close()
 
         np.save(folder_path + "metrics.npy", np.array([mae, mse, rmse, mape, mspe]))
