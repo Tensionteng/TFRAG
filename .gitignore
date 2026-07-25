@@ -185,3 +185,6 @@ logs/
 adjust_result/
 freq_results/
 # runs/ and analysis/ ARE tracked: they are the campaign deliverables
+
+# The paper lives in its own Overleaf git repo; never embed it here
+craft/
