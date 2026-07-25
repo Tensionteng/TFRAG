@@ -37,9 +37,25 @@ except ImportError:
 
 
 def per_window_mse(d):
-    p = np.load(os.path.join(d, "pred.npy")).astype(np.float64)
-    t = np.load(os.path.join(d, "true.npy")).astype(np.float64)
-    return ((p - t) ** 2).mean(axis=(1, 2)), t
+    """Per-window MSE, preferring the precomputed vector.
+
+    Campaign runs use --no_save_arrays (pred/true cost ~160 MB per Weather run), but
+    per_sample_mse.npy is always written and is exactly what the quartile and drift
+    splits need. Falling back to it means this analysis works on the whole campaign
+    rather than only on runs that kept the full arrays.
+    """
+    ps = os.path.join(d, "per_sample_mse.npy")
+    pred = os.path.join(d, "pred.npy")
+    if os.path.exists(pred):
+        p = np.load(pred).astype(np.float64)
+        t = np.load(os.path.join(d, "true.npy")).astype(np.float64)
+        return ((p - t) ** 2).mean(axis=(1, 2)), t
+    if os.path.exists(ps):
+        # No ground truth available to cross-check, so the caller's identity check is
+        # skipped; returning None makes that explicit rather than silently comparing
+        # runs from different splits.
+        return np.load(ps).astype(np.float64), None
+    raise FileNotFoundError(f"neither pred.npy nor per_sample_mse.npy in {d}")
 
 
 def analyse(dataset, model, base_dir, craft_dir, shift_frac=0.2):
@@ -47,7 +63,7 @@ def analyse(dataset, model, base_dir, craft_dir, shift_frac=0.2):
     ec, tc = per_window_mse(craft_dir)
     if eb.shape != ec.shape:
         raise ValueError(f"window count differs: {eb.shape} vs {ec.shape}")
-    if not np.allclose(tb, tc, atol=1e-5):
+    if tb is not None and tc is not None and not np.allclose(tb, tc, atol=1e-5):
         raise ValueError("ground truth differs between runs; refusing to compare")
 
     rows = []
