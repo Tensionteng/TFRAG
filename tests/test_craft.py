@@ -467,6 +467,35 @@ def test_indexed_dataset_appends_index_and_forwards_attrs():
     assert none_idx is None
 
 
+def test_indexed_dataset_survives_pickling():
+    """Workers get the dataset by pickle under forkserver/spawn (Python 3.14 default).
+
+    A naive __getattr__ forwarder recurses forever on `base` during unpickling and
+    kills the worker, which surfaces only as "DataLoader worker exited unexpectedly".
+    """
+    import pickle
+
+    w = pickle.loads(pickle.dumps(IndexedDataset(TinyDataset())))
+    assert len(w) == len(TinyDataset())
+    item = w[2]
+    assert len(item) == 5 and item[4] == 2
+    assert w.scale is False  # forwarding still works after the round trip
+
+
+def test_indexed_loader_with_spawn_workers():
+    """End-to-end: real worker processes, spawn context, must yield indices."""
+    import multiprocessing as mp
+
+    loader = torch.utils.data.DataLoader(
+        IndexedDataset(TinyDataset()),
+        batch_size=4,
+        num_workers=2,
+        multiprocessing_context=mp.get_context("spawn"),
+    )
+    x, y, xm, ym, idx = unpack_batch(next(iter(loader)))
+    assert x.shape[0] == 4 and idx.shape == (4,)
+
+
 @pytest.mark.parametrize("name", ["MSE", "mae", "huber", "fredf", "ffl", "bandmse"])
 def test_frequency_criteria_are_finite_and_differentiable(name):
     crit = build_criterion(name)

@@ -22,6 +22,14 @@ class IndexedDataset(Dataset):
     def __getattr__(self, name):
         # Forward attribute access (e.g. .scale, .inverse_transform) to the wrapped
         # dataset so callers cannot tell the difference.
+        #
+        # The guard is essential, not defensive: __getattr__ runs only for missing
+        # attributes, and while unpickling (Python 3.14 defaults DataLoader workers
+        # to forkserver, which pickles the dataset) `base` is not yet set. Without
+        # this, looking up `base` recurses through getattr(self.base, ...) forever and
+        # the worker dies with "DataLoader worker exited unexpectedly".
+        if name.startswith("__") or name == "base":
+            raise AttributeError(name)
         return getattr(self.base, name)
 
 
