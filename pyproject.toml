@@ -20,7 +20,10 @@ dependencies = [
     "patool>=1.12",
     "reformer-pytorch>=1.4.0",
     "scikit-learn>=1.1.0",
+    # scipy: paired t-test / Wilcoxon in experiments/aggregate_results.py
     "scipy>=1.9.0",
+    # pyarrow: read/write the result_summary.parquet result registry
+    "pyarrow>=14.0.0",
     "sktime>=0.16.0",
     "sympy>=1.10.0",
     "torch>=2.0.0",
