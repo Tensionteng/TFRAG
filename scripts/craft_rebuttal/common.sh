@@ -66,7 +66,35 @@ model_args() {
     MultiPatchFormer) echo "--e_layers 2 --d_layers 1 --factor 3 --d_model 256 --d_ff 256 --n_heads 8" ;;
     TimeMixer)    echo "--e_layers 2 --d_layers 1 --factor 3 --d_model 128 --d_ff 128 --n_heads 8 --down_sampling_layers 3 --down_sampling_method avg --down_sampling_window 2" ;;
     TimesNet)     echo "--e_layers 2 --d_layers 1 --factor 3 --d_model 64 --d_ff 64 --n_heads 8 --top_k 5" ;;
+    # ICLR 2026 baselines, configs from the authors' own scripts (FACT/FACT.sh,
+    # MixLinear/scripts/MixLinear/*.sh). Added for reviewer ErQJ's "outdated baselines".
+    FACT)
+      case "$dataset" in
+        Traffic) echo "--e_layers 1 --d_model 1024 --d_ff 1024 --core 0.5 --dilation 1 2 3 2 1 --num_kernels 4 --use_norm 1" ;;
+        ECL)     echo "--e_layers 1 --d_model 512 --d_ff 2048 --core 0.1 --dilation 1 2 3 4 3 2 1 --num_kernels 4 --use_norm 1" ;;
+        *)       echo "--e_layers 1 --d_model 512 --d_ff 512 --core 0.5 --dilation 1 2 1 --num_kernels 4 --use_norm 1" ;;
+      esac ;;
+    MixLinear)
+      # period_len/lpf/alpha per the authors' *_best.sh; d_model unused by the model.
+      case "$dataset" in
+        ETTh2)   echo "--period_len 24 --lpf 19 --alpha 0.5 --e_layers 1 --d_model 128 --d_ff 128" ;;
+        ETTm1)   echo "--period_len 2 --lpf 15 --alpha 0.01 --e_layers 1 --d_model 128 --d_ff 128" ;;
+        Weather) echo "--period_len 4 --lpf 15 --alpha 0.01 --e_layers 1 --d_model 128 --d_ff 128" ;;
+        ECL|Traffic) echo "--period_len 24 --lpf 19 --alpha 0.5 --e_layers 1 --d_model 128 --d_ff 128" ;;
+        *)       echo "--period_len 24 --lpf 1 --alpha 0.95 --e_layers 1 --d_model 128 --d_ff 128" ;;
+      esac ;;
     *)            echo "--e_layers 2 --d_layers 1 --factor 3 --d_model 128 --d_ff 128 --n_heads 8" ;;
+  esac
+}
+
+# Training budget. Each model gets the budget its own reference script uses, applied
+# identically to that model's base and CRAFT arms so every paired comparison stays
+# matched. Cross-model rows differ in budget exactly as the source papers do.
+epochs_for() {
+  case "$1" in
+    FACT)      echo "15" ;;
+    MixLinear) echo "30" ;;
+    *)         echo "$EPOCHS" ;;
   esac
 }
 
@@ -79,19 +107,37 @@ model_args() {
 # the MSE baseline, which then flatters any objective with bounded gradients -- MAE and
 # Huber appeared to beat MSE by ~20% on Weather purely for that reason. Do not change
 # these without checking the reference script.
-lr_for() {
-  case "$1" in
+lr_for() {  # lr_for <dataset> [model]
+  local ds=$1 model=${2:-iTransformer}
+  case "$model" in
+    FACT)      echo "0.001"; return ;;                       # FACT.sh
+    MixLinear)                                               # MixLinear/scripts/*
+      case "$ds" in
+        ETTm1)         echo "0.005" ;;
+        ETTh2|Weather) echo "0.02"  ;;
+        *)             echo "0.03"  ;;
+      esac; return ;;
+  esac
+  case "$ds" in
     ECL)      echo "0.0005" ;;   # ECL_script/iTransformer.sh
     Traffic)  echo "0.001"  ;;   # Traffic_script/iTransformer.sh
     *)        echo "0.0001" ;;   # run.py default; Weather/Exchange/ETT reference scripts set none
   esac
 }
 
-bs_for() {
-  case "$1" in
-    Traffic) echo "16" ;;
-    ECL)     echo "16" ;;
-    *)       echo "32" ;;
+bs_for() {  # bs_for <dataset> [model]
+  local ds=$1 model=${2:-iTransformer}
+  case "$model" in
+    FACT) echo "32"; return ;;
+    MixLinear)
+      case "$ds" in
+        ECL|Traffic) echo "64"  ;;
+        *)           echo "256" ;;
+      esac; return ;;
+  esac
+  case "$ds" in
+    Traffic|ECL) echo "16" ;;
+    *)           echo "32" ;;
   esac
 }
 
@@ -109,9 +155,11 @@ run_one() {
   local name=$1 root=$2 dpath=$3 data=$4 enc=$5 model=$6 pl=$7 seed=$8
   shift 8
   local extra="$*"
-  local lr bs
-  lr=$(lr_for "$name")
-  bs=$(bs_for "$name")
+  local lr bs ep sl
+  lr=$(lr_for "$name" "$model")
+  bs=$(bs_for "$name" "$model")
+  ep=$(epochs_for "$model")
+  sl=${SEQ_LEN:-96}
   local tagsafe
   tagsafe=$(echo "${name}_${model}_pl${pl}_s${seed}_$(echo "$extra" | tr -cd '[:alnum:]')" | cut -c1-120)
   local log="$LOGDIR/${tagsafe}.log"
@@ -120,11 +168,11 @@ run_one() {
     --task_name long_term_forecast --is_training 1 \
     --root_path $root --data_path $dpath --data $data \
     --model_id ${name}_96_${pl} --model $model --features M \
-    --seq_len 96 --label_len 48 --pred_len $pl \
+    --seq_len $sl --label_len 48 --pred_len $pl \
     --enc_in $enc --dec_in $enc --c_out $enc \
     $(model_args "$model" "$name") \
     --learning_rate $lr --batch_size $bs \
-    --train_epochs $EPOCHS --patience $PATIENCE --lradj type1 \
+    --train_epochs $ep --patience $PATIENCE --lradj type1 \
     --seed $seed --des $DES --itr 1 \
     --num_workers $NUM_WORKERS --gpu $GPU \
     $ARTIFACT_FLAGS $(mem_flags_for "$name") $extra"
