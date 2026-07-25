@@ -3,7 +3,7 @@ import torch
 from models import Autoformer, Transformer, TimesNet, Nonstationary_Transformer, DLinear, FEDformer, \
     Informer, LightTS, Reformer, ETSformer, Pyraformer, PatchTST, MICN, Crossformer, FiLM, iTransformer, \
     Koopa, TiDE, FreTS, TimeMixer, TSMixer, SegRNN, MambaSimple, TemporalFusionTransformer, SCINet, PAttn, TimeXer, \
-    WPMixer, MultiPatchFormer
+    WPMixer, MultiPatchFormer, FACT, MixLinear
 
 
 class Exp_Basic(object):
@@ -38,7 +38,11 @@ class Exp_Basic(object):
             'PAttn': PAttn,
             'TimeXer': TimeXer,
             'WPMixer': WPMixer,
-            'MultiPatchFormer': MultiPatchFormer
+            'MultiPatchFormer': MultiPatchFormer,
+            # ICLR 2026 baselines, added in response to reviewer ErQJ ("evaluated
+            # baselines are outdated"). Upstream: wanghq21/FACT, aitianma/MixLinear.
+            'FACT': FACT,
+            'MixLinear': MixLinear,
         }
         if args.model == 'Mamba':
             print('Please make sure you have successfully installed mamba_ssm')

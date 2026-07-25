@@ -663,6 +663,74 @@ def test_deployed_eval_record_does_not_collide_with_base(tmp_path):
     assert variant_name(A()) == "base"
 
 
+class _NewBaselineArgs:
+    """Config surface the two ICLR-2026 baselines read."""
+    task_name = "long_term_forecast"
+    seq_len, label_len, pred_len = 96, 48, 96
+    enc_in = dec_in = c_out = 7
+    d_model, d_ff, n_heads, e_layers, d_layers = 64, 64, 8, 2, 1
+    dropout = 0.1
+    freq = "h"
+    use_norm = 1
+    num_kernels = 4
+    dilation = [1]
+    core = 0.5
+    period_len, lpf, alpha = 24, 1, 0.95
+    factor = 3
+    embed = "timeF"
+    activation = "gelu"
+    output_attention = False
+
+
+@pytest.mark.parametrize("name", ["FACT", "MixLinear"])
+def test_new_baselines_forward_shapes(name):
+    """Both ICLR-2026 baselines must honour the TSLib forward contract."""
+    import importlib
+
+    args = _NewBaselineArgs()
+    mod = importlib.import_module(f"models.{name}")
+    model = mod.Model(args).float()
+    B = 4
+    x = torch.randn(B, args.seq_len, args.enc_in)
+    xm = torch.randn(B, args.seq_len, 4)
+    dec = torch.randn(B, args.label_len + args.pred_len, args.enc_in)
+    dm = torch.randn(B, args.label_len + args.pred_len, 4)
+    out = model(x, xm, dec, dm)
+    assert out.shape == (B, args.pred_len, args.enc_in), f"{name} returned {out.shape}"
+    assert torch.isfinite(out).all()
+    out.mean().backward()
+    assert any(p.grad is not None for p in model.parameters())
+
+
+@pytest.mark.parametrize("name", ["FACT", "MixLinear"])
+def test_new_baselines_wrap_with_craft(name):
+    """They must also work as CRAFT backbones, which is the plug-in claim."""
+    import importlib
+
+    # Start from a working CRAFT config and add the fields these backbones read,
+    # rather than copying attribute names by hand.
+    a = make_args()
+    for k, v in vars(_NewBaselineArgs).items():
+        if not k.startswith("__"):
+            setattr(a, k, v)
+    a.enc_in = a.dec_in = a.c_out = D
+    a.seq_len, a.pred_len, a.label_len = L, P, 4
+    a.period_len, a.lpf = 4, 1
+    a.dilation = [1]
+    a.d_model, a.d_ff = 32, 32
+
+    mod = importlib.import_module(f"models.{name}")
+    plugin = RAGPlugin(mod.Model(a).float(), a)
+    ds = TinyDataset()
+    plugin.load_memory_bank(ds, batch_size=8)
+    plugin.train()
+    x = torch.stack([ds[i][0] for i in range(4)])
+    y = torch.stack([ds[i][1] for i in range(4)])[:, -P:]
+    out = plugin(x, torch.zeros(4, L, 4), None, None, batch_y=y)
+    assert torch.isfinite(out["loss"])
+    out["loss"].backward()
+
+
 def test_custom_datasets_are_not_pooled(tmp_path):
     """weather / traffic / electricity / exchange_rate all use --data custom.
 

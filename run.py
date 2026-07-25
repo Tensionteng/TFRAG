@@ -386,6 +386,28 @@ if __name__ == "__main__":
 
     # TimeXer
     parser.add_argument("--patch_len", type=int, default=16, help="patch length")
+
+    # FACT (ICLR 2026), https://github.com/wanghq21/FACT
+    parser.add_argument(
+        "--dilation",
+        type=int,
+        nargs="+",
+        default=[1, 2, 3, 2, 1],
+        help="FACT: dilation per Inception block; its length is the number of blocks",
+    )
+    parser.add_argument(
+        "--core",
+        type=float,
+        default=0.5,
+        help="FACT: weight between time-domain and frequency-domain modelling",
+    )
+
+    # MixLinear (ICLR 2026), https://github.com/aitianma/MixLinear
+    parser.add_argument("--period_len", type=int, default=24, help="MixLinear: period length")
+    parser.add_argument("--lpf", type=int, default=15, help="MixLinear: low-pass cutoff")
+    parser.add_argument(
+        "--alpha", type=float, default=0.5, help="MixLinear: time/frequency mix factor"
+    )
     # RAG
     parser.add_argument(
         "--fusion_mode", help="fusion mode of RAG, mean or mlp", default="mean"
