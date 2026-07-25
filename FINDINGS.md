@@ -24,11 +24,23 @@ ETTh1, horizon 96, paired by seed:
 | `craft_g20.1_frozen` | 3 | 0.39515 | 0.39219 ±0.0024 | +0.75 | 3/3 | 0.097 |
 | `craft_g21_frozen` | 3 | 0.39515 | 0.39338 ±0.0025 | +0.45 | 3/3 | 0.194 |
 
-Weather, horizon 96: the submitted method is catastrophic — 0.20680 → 0.27401
-(**−32.6%**, 0/2 seeds). Remaining Weather arms were still running at the time of
-writing; see `runs/` for the current state.
+Weather, horizon 96, paired by seed (3 seeds):
 
-**No arm beats the baseline significantly. Nothing reaches p < 0.05.**
+| arm | base MSE | arm MSE | Δ% | wins | p |
+|---|---|---|---|---|---|
+| `craft` — as submitted | 0.20552 | 0.26806 ±0.0207 | **−30.48** | 0/3 | **0.039** |
+| `craft_detach` — null control | 0.20552 | 0.20022 ±0.0035 | +2.55 | 3/3 | 0.271 |
+| `craft_frozen` | 0.20552 | 0.20102 ±0.0030 | +2.18 | 3/3 | 0.122 |
+| `craft_g21_frozen` (γ₂=1) | 0.20552 | 0.20849 ±0.0112 | −1.49 | 2/3 | 0.734 |
+
+**No arm beats the baseline significantly on either dataset. The only significant
+result in the whole set is that the submitted configuration is *worse* on Weather
+(p = 0.039).**
+
+On both datasets the null control (`craft_detach`, which by construction trains θ with
+the baseline's exact objective) scores at least as well as the arm where the RL term
+actually acts on θ: +2.55% vs +2.18% on Weather, +0.24% vs +0.26% on ETTh1. A
+mechanism that cannot outperform its own placebo is not doing the work.
 
 Note the seed-count effect, which is itself a finding: at 3 seeds `craft_frozen`
 looked like +0.74% (3/3 wins, p=0.095); at 10 seeds it is +0.26% (p=0.256). The
@@ -78,7 +90,10 @@ This is borne out: distillation does not beat the `detach` null control (+0.53% 
 ## 3. The noise floor, and what it implies for the submitted numbers
 
 ETTh1 base MSE across 10 seeds: **0.39268, σ ≈ 0.0024 (0.6% of the mean)**.
-Weather base across seeds spans 0.2044–0.2092, a **2.3%** spread.
+Weather: the `craft_detach` null control — an objective *identical* to the baseline's,
+differing only in RNG stream — scores **+2.55%** with 3/3 wins. That is a direct
+measurement of Weather's trajectory noise: roughly **±2.5%**, from nothing but a
+different random stream.
 
 The submitted headline gains — ECL 3.4%, Exchange 2.8%, Weather 2.4%, Traffic 1.6% —
 sit at or inside this per-dataset seed spread. That is the same conclusion Reviewer
