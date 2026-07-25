@@ -177,3 +177,11 @@ freq_metric/
 simulated_metric_plots/
 simulated_metric_plots_styled/
 simulated_metric_plots_V3/
+
+# Datasets and bulky per-run artifacts (regenerate; never commit)
+dataset/
+test_results/
+logs/
+adjust_result/
+freq_results/
+# runs/ and analysis/ ARE tracked: they are the campaign deliverables

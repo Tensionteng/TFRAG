@@ -1,280 +1,257 @@
-"""
-RAG (Retrieval-Augmented Generation) Plugin Module
+"""CRAFT: training-time corrector wrapper for any forecasting backbone.
 
-This module provides a plug-and-play RAG+RL enhancement for time series forecasting models.
-Usage:
-    1. Wrap your model with RAGPlugin to enable RAG+RL
-    2. Or use RAGPlugin as a standalone component in your experiment
+Wrap a backbone in :class:`RAGPlugin` and it gains a retrieval-conditioned RL
+corrector during training. At eval time the wrapper is a pass-through: no
+retrieval, no policy, no extra parameters on the forward path. After training,
+`extract_base_state_dict` recovers the backbone alone for deployment.
+
+Correspondence to the paper (Section 3):
+    Y_ref      = distance-weighted mean of k retrieved futures   (Eq. 8)
+    s          = [Y_hat ; Y_ref]                                  (Section 3.2)
+    a ~ N(mu, sigma), a' = Pool(a; kappa)                         (Eq. 9-10)
+    r in {0,1,2} from MSE/MAE improvement indicators              (Eq. 11)
+    A_j        = (r_j - mean r) / (std r + eps)                   (Eq. 12)
+    L_RL       = -mean(log pi(a_j|s) * A_j) + lambda * mean||a'_j||_2
+    L_total    = gamma_1 * MSE + gamma_2 * L_RL                   (Eq. 14)
 
 Example:
-    >>> from models.rag_plugin import RAGPlugin
-    >>> model = YourModel(args)
-    >>> rag_model = RAGPlugin(model, args)
-    >>> outputs = rag_model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+    >>> model = RAGPlugin(iTransformer(args), args)
+    >>> out = model(x, x_mark, dec_in, y_mark, batch_y=target, query_idx=idx)
+    >>> out['loss'].backward()
 """
+
+from typing import Any, Dict, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple, Dict, Any
-import numpy as np
 
 from models.Memory import MemoryBankWithRetrieval
-from utils.tools import mae_reward_func, mse_reward_func
+from utils.tools import continuous_reward, discrete_reward
 
 
 class PolicyHead(nn.Module):
+    """Gaussian policy over an additive correction, conditioned on [Y_hat; Y_ref].
+
+    A depthwise-in-time CNN rather than a per-timestep MLP: the kernel-3
+    convolutions let the correction at step t depend on its neighbours, which is
+    the same locality the pooling step relies on.
     """
-    Generic policy head for RL-based adjustment.
-    Can be attached to any forecasting model.
-    """
-    
+
     def __init__(
         self,
-        d_model: int,
-        pred_len: int,
         c_out: int,
         hidden_dim: int = 128,
-        mode: str = "concat",  # "concat" or "diff"
+        mode: str = "concat",
+        logstd_min: float = -5.0,
+        logstd_max: float = -1.0,
     ):
         super().__init__()
+        if mode not in ("concat", "diff"):
+            raise ValueError(f"unknown policy mode: {mode}")
         self.mode = mode
-        self.pred_len = pred_len
         self.c_out = c_out
-        
-        # Input dimension depends on mode
-        # concat: pred_len * 2 (output + retrieved)
-        # diff: pred_len (output - retrieved)
-        input_dim = d_model * 2 if mode == "concat" else d_model
-        
-        # Policy network layers
-        self.action_mean = nn.Sequential(
-            nn.Conv1d(input_dim, hidden_dim, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv1d(hidden_dim, c_out, kernel_size=3, padding=1),
-        )
-        self.action_logstd = nn.Sequential(
-            nn.Conv1d(input_dim, hidden_dim, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv1d(hidden_dim, c_out, kernel_size=3, padding=1),
-        )
-        
-    def forward(self, outputs: torch.Tensor, retrieved: torch.Tensor) -> torch.distributions.Normal:
-        """
-        Compute action distribution given outputs and retrieved sequences.
-        
-        Args:
-            outputs: [B, pred_len, c_out] model predictions
-            retrieved: [B, pred_len, c_out] retrieved ground truth
-            
-        Returns:
-            Normal distribution for RL sampling
-        """
+        self.logstd_min = logstd_min
+        self.logstd_max = logstd_max
+
+        # State channels: 2*c_out when concatenating, c_out when using the residual.
+        in_ch = c_out * 2 if mode == "concat" else c_out
+
+        def trunk():
+            return nn.Sequential(
+                nn.Conv1d(in_ch, hidden_dim, kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.Conv1d(hidden_dim, c_out, kernel_size=3, padding=1),
+            )
+
+        self.action_mean = trunk()
+        self.action_logstd = trunk()
+
+    def forward(self, outputs: torch.Tensor, retrieved: torch.Tensor):
+        """outputs/retrieved: [B, P, c_out] -> Normal over [B, P, c_out]."""
         if self.mode == "concat":
-            # Concatenate along feature dimension
-            x = torch.cat([outputs, retrieved], dim=-1)  # [B, pred_len, 2*c_out]
-        else:  # diff
-            x = retrieved - outputs  # [B, pred_len, c_out]
-            
-        # Transpose for Conv1d: [B, L, D] -> [B, D, L]
-        x = x.permute(0, 2, 1)
-        
-        action_mean = self.action_mean(x).permute(0, 2, 1)  # [B, pred_len, c_out]
-        action_logstd = self.action_logstd(x).permute(0, 2, 1)
-        action_logstd = torch.clamp(action_logstd, min=-5, max=-1)
-        action_std = torch.exp(action_logstd)
-        
-        return torch.distributions.Normal(action_mean, action_std)
+            x = torch.cat([outputs, retrieved], dim=-1)
+        else:
+            x = retrieved - outputs
+
+        x = x.permute(0, 2, 1)  # [B, C, P] for Conv1d
+        mean = self.action_mean(x).permute(0, 2, 1)
+        logstd = self.action_logstd(x).permute(0, 2, 1)
+        logstd = torch.clamp(logstd, min=self.logstd_min, max=self.logstd_max)
+        return torch.distributions.Normal(mean, torch.exp(logstd))
 
 
 class RAGPlugin(nn.Module):
+    """Plug-and-play CRAFT wrapper.
+
+    Reads from ``args``: use_rag, num_retrieve, num_rl_samples, gamma_1, gamma_2,
+    lambda_reg, kappa, reward_level, reward_type, rl_sampling, detach_yhat,
+    retrieval_mode, exclusion_radius, policy_hidden, policy_mode, seq_len,
+    pred_len, enc_in, c_out, use_gpu, gpu, memory_store_cpu.
     """
-    Plug-and-play RAG+RL wrapper for time series forecasting models.
-    
-    This wrapper adds retrieval-augmented generation and reinforcement learning
-    capabilities to any base forecasting model without modifying its architecture.
-    
-    Args:
-        base_model: The base forecasting model (e.g., iTransformer, PatchTST)
-        args: Configuration arguments containing:
-            - use_rag: bool, whether to enable RAG
-            - num_retrieve: int, number of samples to retrieve
-            - seq_len: int, input sequence length
-            - pred_len: int, prediction length
-            - enc_in: int, encoder input dimension
-            - d_model: int, model dimension
-            - gemma_1: float, weight for base loss
-            - gemma_2: float, weight for RL loss
-            - use_gpu: bool, whether to use GPU
-            - gpu: int, GPU device index
-    """
-    
+
     def __init__(self, base_model: nn.Module, args):
         super().__init__()
         self.base_model = base_model
         self.args = args
-        self.use_rag = getattr(args, 'use_rag', False)
-        
+        self.use_rag = bool(getattr(args, "use_rag", False))
+
+        self.num_retrieve = int(getattr(args, "num_retrieve", 5))
+        self.num_samples = int(getattr(args, "num_rl_samples", 8))
+        self.gamma_1 = float(getattr(args, "gamma_1", 0.5))
+        self.gamma_2 = float(getattr(args, "gamma_2", 0.5))
+        self.lambda_reg = float(getattr(args, "lambda_reg", 0.0))
+        self.kappa = int(getattr(args, "kappa", 3))
+        self.reward_level = getattr(args, "reward_level", "step")
+        self.reward_type = getattr(args, "reward_type", "discrete")
+        self.rl_sampling = getattr(args, "rl_sampling", "sample")
+        self.detach_yhat = bool(getattr(args, "detach_yhat", False))
+        self.retrieval_mode = getattr(args, "retrieval_mode", "nn")
+        self.exclusion_radius = int(getattr(args, "exclusion_radius", 0))
+
         if self.use_rag:
-            # Initialize memory bank
             self.memory_bank = MemoryBankWithRetrieval(
                 seq_len=args.seq_len,
                 dim=args.enc_in,
                 pred_len=args.pred_len,
-                use_gpu=getattr(args, 'use_gpu', True) and torch.cuda.is_available(),
-                gpu_index=getattr(args, 'gpu', 0),
+                use_gpu=bool(getattr(args, "use_gpu", True))
+                and torch.cuda.is_available()
+                and not bool(getattr(args, "no_faiss_gpu", False)),
+                gpu_index=int(getattr(args, "gpu", 0)),
+                store_on_cpu=bool(getattr(args, "memory_store_cpu", False)),
             )
-            
-            # Initialize policy head
             self.policy_head = PolicyHead(
-                d_model=args.d_model,
-                pred_len=args.pred_len,
                 c_out=args.c_out,
-                mode="concat",
+                hidden_dim=int(getattr(args, "policy_hidden", 128)),
+                mode=getattr(args, "policy_mode", "concat"),
             )
-            
-            self.num_retrieve = getattr(args, 'num_retrieve', 5)
-            self.num_samples = getattr(args, 'num_rl_samples', 8)
-            self.gamma_1 = getattr(args, 'gamma_1', 0.5)
-            self.gamma_2 = getattr(args, 'gamma_2', 0.5)
-            
-        self._training_mode = True
-        
+
+    # ------------------------------------------------------------------ setup
+
+    def load_memory_bank(self, dataset, batch_size=64, num_workers=0):
+        if self.use_rag:
+            self.memory_bank.build_from_dataset(
+                dataset, batch_size=batch_size, num_workers=num_workers
+            )
+
+    def get_base_model(self) -> nn.Module:
+        return self.base_model
+
+    def extract_base_state_dict(self) -> Dict[str, torch.Tensor]:
+        """State dict of the deployable backbone, with the wrapper prefix removed."""
+        prefix = "base_model."
+        return {
+            k[len(prefix) :]: v
+            for k, v in self.state_dict().items()
+            if k.startswith(prefix)
+        }
+
+    # ---------------------------------------------------------------- forward
+
+    def _run_base(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+        # Always go through forward(): it is the one entry point every TSLib model
+        # implements with this signature. Calling .forecast() directly breaks on
+        # backbones that define it as forecast(x_enc) only (DLinear, RLinear, ...).
+        return self.base_model(x_enc, x_mark_enc, x_dec, x_mark_dec)
+
+    def _build_reference(self, x_enc, query_idx):
+        """Y_ref: distance-weighted average of retrieved futures (Eq. 8)."""
+        neighbours, distances = self.memory_bank.retrieve(
+            x_enc,
+            k=self.num_retrieve,
+            query_idx=query_idx,
+            exclusion_radius=self.exclusion_radius,
+            mode=self.retrieval_mode,
+        )
+        # Min-max normalise distances per query before the softmax so the weights
+        # do not depend on the absolute scale of the dataset.
+        d_min = distances.min(dim=1, keepdim=True)[0]
+        d_max = distances.max(dim=1, keepdim=True)[0]
+        d_norm = (distances - d_min) / (d_max - d_min + 1e-4)
+        weights = F.softmax(torch.exp(-d_norm), dim=1)
+        return torch.sum(weights[:, :, None, None] * neighbours, dim=1), distances
+
     def forward(
         self,
         x_enc: torch.Tensor,
         x_mark_enc: Optional[torch.Tensor] = None,
         x_dec: Optional[torch.Tensor] = None,
         x_mark_dec: Optional[torch.Tensor] = None,
-        **kwargs
+        batch_y: Optional[torch.Tensor] = None,
+        query_idx: Optional[torch.Tensor] = None,
+        **kwargs,
     ) -> Dict[str, Any]:
-        """
-        Forward pass with optional RAG+RL enhancement.
-        
-        Returns:
-            dict containing:
-                - 'outputs': model predictions [B, pred_len, c_out]
-                - 'loss': total loss (if in training and use_rag=True)
-                - 'base_loss': base MSE loss
-                - 'rl_loss': reinforcement learning loss (if use_rag)
-                - 'dist': action distribution (if use_rag)
-                - 'adjusted_outputs': adjusted predictions (if use_rag)
-        """
-        # Get base model predictions
-        if hasattr(self.base_model, 'forecast'):
-            outputs = self.base_model.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
-        else:
-            outputs = self.base_model(x_enc, x_mark_enc, x_dec, x_mark_dec)
-            
-        result = {'outputs': outputs}
-        
-        # If not using RAG, return base outputs only
+        outputs = self._run_base(x_enc, x_mark_enc, x_dec, x_mark_dec)
+        result: Dict[str, Any] = {"outputs": outputs}
+
+        # Eval / non-RAG: identical to the bare backbone.
         if not self.use_rag or not self.training:
             return result
-            
-        # RAG+RL enhancement
-        batch_y = kwargs.get('batch_y')
         if batch_y is None:
-            raise ValueError("batch_y is required for RAG training")
-            
-        # Retrieve similar sequences
-        similar_seqs, similar_seqs_mark, similar_seqs_gt, distances = \
-            self.memory_bank.retrieve_similar(x_enc, k=self.num_retrieve)
-        
-        # Compute similarity weights
-        d_min = distances.min(dim=1, keepdim=True)[0]
-        d_max = distances.max(dim=1, keepdim=True)[0]
-        weights = (distances - d_min) / (d_max - d_min + 1e-4)
-        weights = torch.exp(-weights)
-        weights = F.softmax(weights, dim=1)
-        
-        # Weighted average of retrieved sequences
-        retrieved_gt = torch.sum(
-            weights.unsqueeze(-1).unsqueeze(-1) * similar_seqs_gt,
-            dim=1,
-        )
-        
-        # Get action distribution from policy head
-        dist = self.policy_head(outputs, retrieved_gt)
-        
-        # RL sampling
-        if self.training:
-            log_probs = []
-            rewards = []
-            
-            for _ in range(self.num_samples):
-                action = dist.rsample()
-                log_prob = dist.log_prob(action).sum(dim=-1)
-                
-                # Smooth action with pooling
-                action = F.avg_pool1d(
-                    action.permute(0, 2, 1),
-                    kernel_size=3,
-                    stride=1,
-                    padding=1,
-                ).permute(0, 2, 1)
-                
-                adjusted = outputs + action
-                
-                # Compute reward
-                reward = mae_reward_func(outputs, adjusted, batch_y) + \
-                        mse_reward_func(outputs, adjusted, batch_y)
-                
-                log_probs.append(log_prob)
-                rewards.append(reward)
-            
-            log_probs = torch.stack(log_probs, dim=0)
-            rewards = torch.stack(rewards, dim=0)
-            
-            # Normalize rewards
-            mean_reward = rewards.mean(dim=0, keepdim=True)
-            std_reward = rewards.std(dim=0, keepdim=True) + 1e-4
-            advantages = (rewards - mean_reward) / std_reward
-            
-            # Compute RL loss
-            per_step_loss = log_probs * advantages
-            rl_loss = -per_step_loss.mean()
-            
-            # Base MSE loss
-            base_loss = F.mse_loss(outputs, batch_y)
-            
-            # Total loss
-            total_loss = self.gamma_1 * base_loss + self.gamma_2 * rl_loss
-            
-            result.update({
-                'loss': total_loss,
-                'base_loss': base_loss,
-                'rl_loss': rl_loss,
-                'dist': dist,
-                'adjusted_outputs': outputs + dist.mean,
-            })
-        else:
-            # Inference: use mean action for adjustment
+            raise ValueError("batch_y is required while training with use_rag")
+
+        pred_len = batch_y.size(1)
+        y_hat = outputs[:, -pred_len:, -batch_y.size(-1) :]
+
+        y_ref, distances = self._build_reference(x_enc, query_idx)
+        state_pred = y_hat.detach() if self.detach_yhat else y_hat
+        dist = self.policy_head(state_pred, y_ref)
+
+        log_probs, rewards, action_norms = [], [], []
+        reward_fn = discrete_reward if self.reward_type == "discrete" else continuous_reward
+
+        for _ in range(self.num_samples):
+            # REINFORCE: the score-function estimator needs a non-reparameterised
+            # sample. 'rsample' is kept only as a sensitivity knob.
+            action = dist.rsample() if self.rl_sampling == "rsample" else dist.sample()
+            # log pi(a|s) summed over channels -> one term per timestep, matching
+            # the timestep-level reward granularity.
+            log_prob = dist.log_prob(action).sum(dim=-1)
+
+            smoothed = F.avg_pool1d(
+                action.permute(0, 2, 1),
+                kernel_size=self.kappa,
+                stride=1,
+                padding=self.kappa // 2,
+            ).permute(0, 2, 1)
+            adjusted = y_hat.detach() + smoothed
+
             with torch.no_grad():
-                adjusted = outputs + dist.mean
-                result['adjusted_outputs'] = adjusted
-                
+                rewards.append(
+                    reward_fn(y_hat.detach(), adjusted, batch_y, level=self.reward_level)
+                )
+            log_probs.append(log_prob)
+            action_norms.append(smoothed.pow(2).sum(dim=-1).sqrt())
+
+        log_probs = torch.stack(log_probs, dim=0)  # [Ns, B, P]
+        rewards = torch.stack(rewards, dim=0).to(log_probs.dtype)  # [Ns, B, P]
+        if rewards.shape != log_probs.shape:
+            raise RuntimeError(
+                f"reward shape {tuple(rewards.shape)} != log-prob shape "
+                f"{tuple(log_probs.shape)}; check reward_level"
+            )
+
+        # Advantage normalised across the Ns samples of the same state (Eq. 13).
+        advantages = (rewards - rewards.mean(dim=0, keepdim=True)) / (
+            rewards.std(dim=0, keepdim=True) + 1e-4
+        )
+        pg_loss = -(log_probs * advantages).mean()
+        reg = torch.stack(action_norms, dim=0).mean() if self.lambda_reg else y_hat.new_zeros(())
+        rl_loss = pg_loss + self.lambda_reg * reg
+
+        base_loss = F.mse_loss(y_hat, batch_y)
+        result.update(
+            {
+                "loss": self.gamma_1 * base_loss + self.gamma_2 * rl_loss,
+                "base_loss": base_loss,
+                "rl_loss": rl_loss,
+                "pg_loss": pg_loss,
+                "action_l2": reg,
+                "reward_mean": rewards.mean(),
+                "dist": dist,
+                "y_ref": y_ref,
+                "retrieval_distance": distances.mean(),
+                "adjusted_outputs": y_hat + dist.mean,
+            }
+        )
         return result
-        
-    def load_memory_bank(self, train_loader):
-        """Load training data into memory bank."""
-        if self.use_rag:
-            self.memory_bank.load_dataset(train_loader)
-            
-    def train(self, mode: bool = True):
-        """Set training mode."""
-        self._training_mode = mode
-        super().train(mode)
-        return self
-        
-    def eval(self):
-        """Set evaluation mode."""
-        return self.train(False)
-        
-    @property
-    def training(self):
-        return self._training_mode
-        
-    def get_base_model(self):
-        """Get the underlying base model."""
-        return self.base_model

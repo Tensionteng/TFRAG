@@ -11,14 +11,56 @@ from utils.print_args import print_args
 import random
 import numpy as np
 
-torch.autograd.set_detect_anomaly(True)
+
+def build_setting(args, ii):
+    """Experiment id. Every field that changes results must appear here, or two
+    different conditions will overwrite each other's results/ directory."""
+    parts = [
+        args.task_name,
+        args.model_id,
+        args.model,
+        args.data,
+        f"ft{args.features}",
+        f"sl{args.seq_len}",
+        f"ll{args.label_len}",
+        f"pl{args.pred_len}",
+        f"dm{args.d_model}",
+        f"nh{args.n_heads}",
+        f"el{args.e_layers}",
+        f"dl{args.d_layers}",
+        f"df{args.d_ff}",
+        f"fc{args.factor}",
+        f"eb{args.embed}",
+        f"lr{args.learning_rate}",
+        f"bs{args.batch_size}",
+        f"ep{args.train_epochs}",
+        f"loss{args.loss}",
+        f"seed{args.seed}",
+        args.des,
+        str(ii),
+    ]
+    if args.use_rag:
+        parts += [
+            "rag",
+            f"g1{args.gamma_1}",
+            f"g2{args.gamma_2}",
+            f"k{args.num_retrieve}",
+            f"ns{args.num_rl_samples}",
+            f"ret{args.retrieval_mode}",
+            f"excl{args.exclusion_radius}",
+        ]
+        if args.lambda_reg:
+            parts.append(f"lam{args.lambda_reg}")
+        if args.detach_yhat:
+            parts.append("detach")
+        if args.reward_type != "discrete":
+            parts.append(args.reward_type)
+    if args.tag:
+        parts.append(args.tag)
+    return "_".join(str(p) for p in parts)
+
 
 if __name__ == "__main__":
-    fix_seed = 2021
-    random.seed(fix_seed)
-    torch.manual_seed(fix_seed)
-    np.random.seed(fix_seed)
-
     parser = argparse.ArgumentParser(description="TimesNet")
 
     # basic config
@@ -239,7 +281,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--augmentation_ratio", type=int, default=0, help="How many times to augment"
     )
-    parser.add_argument("--seed", type=int, default=2, help="Randomization seed")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=2021,
+        help="global seed: seeds python/numpy/torch training AND augmentation. "
+        "Vary this to produce multi-seed results (was hardcoded to 2021 before)",
+    )
     parser.add_argument(
         "--jitter",
         default=False,
@@ -344,26 +392,113 @@ if __name__ == "__main__":
     )
     parser.add_argument("--use_rag", action="store_true", help="whether use rag", default=False)
     parser.add_argument(
-        "--num_retrieve", type=int, help="number of retrieve", default=5
+        "--num_retrieve", type=int, help="number of retrieve (k)", default=5
     )
     parser.add_argument("--gamma_1", type=float, default=0.5, help="weight for base loss")
     parser.add_argument("--gamma_2", type=float, default=0.5, help="weight for RL loss")
     parser.add_argument("--num_rl_samples", type=int, default=8, help="number of RL samples for policy gradient")
 
+    # CRAFT corrector details (all previously hardcoded or missing)
+    parser.add_argument(
+        "--lambda_reg",
+        type=float,
+        default=0.0,
+        help="weight of the L2 action penalty in L_RL (paper Eq. 12). 0 reproduces "
+        "the released implementation, which omitted this term",
+    )
+    parser.add_argument("--kappa", type=int, default=3, help="temporal pooling window")
+    parser.add_argument(
+        "--reward_level",
+        type=str,
+        default="step",
+        choices=["step", "item"],
+        help="granularity of the reward: per forecast timestep or per sample",
+    )
+    parser.add_argument(
+        "--reward_type",
+        type=str,
+        default="discrete",
+        choices=["discrete", "continuous"],
+        help="discrete {0,1,2} indicators (paper) or raw improvement magnitude",
+    )
+    parser.add_argument(
+        "--rl_sampling",
+        type=str,
+        default="sample",
+        choices=["sample", "rsample"],
+        help="'sample' = REINFORCE score-function estimator (paper); 'rsample' = "
+        "reparameterised, kept as a sensitivity knob",
+    )
+    parser.add_argument(
+        "--detach_yhat",
+        action="store_true",
+        default=False,
+        help="block the RL gradient path into the backbone (detach ablation)",
+    )
+    parser.add_argument(
+        "--retrieval_mode",
+        type=str,
+        default="nn",
+        choices=["nn", "random"],
+        help="nearest-neighbour retrieval, or the random-reference control",
+    )
+    parser.add_argument(
+        "--exclusion_radius",
+        type=int,
+        default=0,
+        help="drop neighbours within this many timesteps of the query. 0=off, "
+        "1=self-exclusion, >=pred_len = no target-window overlap, "
+        ">=seq_len+pred_len = no overlap at all",
+    )
+    parser.add_argument("--policy_hidden", type=int, default=128, help="policy hidden width")
+    parser.add_argument(
+        "--policy_mode", type=str, default="concat", choices=["concat", "diff"]
+    )
+    parser.add_argument(
+        "--memory_store_cpu",
+        action="store_true",
+        default=False,
+        help="keep the retrieved-future store in host memory (needed for Traffic-scale data)",
+    )
+    parser.add_argument(
+        "--no_faiss_gpu",
+        action="store_true",
+        default=False,
+        help="force a CPU FAISS index even when CUDA is available",
+    )
+    parser.add_argument("--tag", type=str, default="", help="free-form suffix for the run id")
+    parser.add_argument(
+        "--detect_anomaly",
+        action="store_true",
+        default=False,
+        help="enable torch.autograd.set_detect_anomaly (debugging only; slow)",
+    )
+
     args = parser.parse_args()
+
+    # Seeding: previously fixed at 2021 regardless of --seed, which made
+    # multi-seed evaluation impossible from the CLI.
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+
+    if args.detect_anomaly:
+        torch.autograd.set_detect_anomaly(True)
     if torch.cuda.is_available() and args.use_gpu:
         args.device = torch.device("cuda:{}".format(args.gpu))
         print("Using GPU")
     else:
-        if hasattr(torch.backends, "mps"):
-            args.device = (
-                torch.device("mps")
-                if torch.backends.mps.is_available()
-                else torch.device("cpu")
-            )
+        # Keep use_gpu/gpu_type consistent with reality, otherwise Exp_Basic
+        # still tries to move the model to cuda:0 and crashes on CPU-only hosts.
+        args.use_gpu = False
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            args.device = torch.device("mps")
+            args.use_gpu = True
+            args.gpu_type = "mps"
         else:
             args.device = torch.device("cpu")
-        print("Using cpu or mps")
+        print(f"Using {args.device}")
 
     if args.use_gpu and args.use_multi_gpu:
         args.devices = args.devices.replace(" ", "")
@@ -391,31 +526,7 @@ if __name__ == "__main__":
         for ii in range(args.itr):
             # setting record of experiments
             exp = Exp(args)  # set experiments
-            setting = "{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_expand{}_dc{}_fc{}_eb{}_dt{}_{}_{}{}_{}_{}".format(
-                args.task_name,
-                args.model_id,
-                args.model,
-                args.data,
-                args.features,
-                args.seq_len,
-                args.label_len,
-                args.pred_len,
-                args.d_model,
-                args.n_heads,
-                args.e_layers,
-                args.d_layers,
-                args.d_ff,
-                args.expand,
-                args.d_conv,
-                args.factor,
-                args.embed,
-                args.distil,
-                args.des,
-                ii,
-                "_rag" if args.use_rag else "",
-                args.gamma_1,
-                args.gamma_2,
-            )
+            setting = build_setting(args, ii)
 
             print(
                 ">>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>".format(setting)
@@ -433,31 +544,7 @@ if __name__ == "__main__":
     else:
         exp = Exp(args)  # set experiments
         ii = 0
-        setting = "{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_expand{}_dc{}_fc{}_eb{}_dt{}_{}_{}{}_{}_{}".format(
-            args.task_name,
-            args.model_id,
-            args.model,
-            args.data,
-            args.features,
-            args.seq_len,
-            args.label_len,
-            args.pred_len,
-            args.d_model,
-            args.n_heads,
-            args.e_layers,
-            args.d_layers,
-            args.d_ff,
-            args.expand,
-            args.d_conv,
-            args.factor,
-            args.embed,
-            args.distil,
-            args.des,
-            ii,
-            "_rag" if args.use_rag else "",
-            args.gemma_1,
-            args.gemma_2,
-        )
+        setting = build_setting(args, ii)
 
         print(">>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<".format(setting))
         exp.test(setting, test=1)

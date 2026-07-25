@@ -140,9 +140,36 @@ def unwrap_model(model: nn.Module) -> nn.Module:
     # Unwrap DataParallel
     if hasattr(model, 'module'):
         model = model.module
-    
+
     # Unwrap RAGPlugin
     if isinstance(model, RAGPlugin):
         model = model.get_base_model()
-    
+
     return model
+
+
+def unwrap_dataparallel(model: nn.Module) -> nn.Module:
+    """Strip only the DataParallel wrapper, keeping RAGPlugin intact."""
+    return model.module if hasattr(model, 'module') else model
+
+
+def extract_base_state_dict(model: nn.Module):
+    """State dict of the backbone alone, ready to load into an unwrapped model.
+
+    Works whether ``model`` is a bare backbone, a RAGPlugin, or either of those
+    inside DataParallel. This is the deployment artifact: what CRAFT actually
+    ships once the corrector and the index are discarded.
+    """
+    inner = unwrap_dataparallel(model)
+    if isinstance(inner, RAGPlugin):
+        return inner.extract_base_state_dict()
+    return inner.state_dict()
+
+
+def strip_base_prefix(state_dict, prefix: str = "base_model."):
+    """Turn a checkpoint saved from a RAGPlugin into a backbone-only state dict."""
+    if any(k.startswith(prefix) for k in state_dict):
+        return {
+            k[len(prefix):]: v for k, v in state_dict.items() if k.startswith(prefix)
+        }
+    return state_dict

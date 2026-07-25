@@ -1,5 +1,4 @@
 import os
-from tkinter import NO
 
 import numpy as np
 import torch
@@ -202,30 +201,54 @@ def cal_rfft(signal, freq_ratio=0.1):
     return high_signal, low_signal
 
 
-def mse_reward_func(output, adjusted_output, gt):
-    # mse_output = ((output - gt) ** 2).mean(dim=(1, 2))
-    # mse_adjusted = ((adjusted_output - gt) ** 2).mean(dim=(1, 2))
-    mse_output = (output - gt) ** 2
-    mse_adjusted = (adjusted_output - gt) ** 2
-    return torch.where(
-        mse_adjusted < mse_output,
-        torch.tensor(1.0, device=output.device),
-        torch.tensor(0.0, device=output.device),
-    )
-    return mse_output - mse_adjusted
+def _reduce_error(err, level):
+    """Reduce a [B, P, C] error tensor to the granularity the reward lives on.
+
+    level='step' -> [B, P]  (one reward per forecast timestep, averaged over channels)
+    level='item' -> [B]     (one reward per sample)
+    """
+    if level == "step":
+        return err.mean(dim=-1)
+    if level == "item":
+        return err.mean(dim=(1, 2))
+    raise ValueError(f"unknown reward level: {level}")
 
 
-def mae_reward_func(output, adjusted_output, gt):
-    # mae_output = torch.abs(output - gt).mean(dim=(1, 2))
-    # mae_adjusted = torch.abs(adjusted_output - gt).mean(dim=(1, 2))
-    mae_output = torch.abs(output - gt)
-    mae_adjusted = torch.abs(adjusted_output - gt)
-    return torch.where(
-        mae_adjusted < mae_output,
-        torch.tensor(1.0, device=output.device),
-        torch.tensor(0.0, device=output.device),
+def mse_reward_func(output, adjusted_output, gt, level="step"):
+    """Binary indicator: did the correction reduce squared error at this granularity?"""
+    e_out = _reduce_error((output - gt) ** 2, level)
+    e_adj = _reduce_error((adjusted_output - gt) ** 2, level)
+    return (e_adj < e_out).to(output.dtype)
+
+
+def mae_reward_func(output, adjusted_output, gt, level="step"):
+    """Binary indicator: did the correction reduce absolute error at this granularity?"""
+    e_out = _reduce_error(torch.abs(output - gt), level)
+    e_adj = _reduce_error(torch.abs(adjusted_output - gt), level)
+    return (e_adj < e_out).to(output.dtype)
+
+
+def discrete_reward(output, adjusted_output, gt, level="step"):
+    """Paper Eq. (11): r = 2 if both MSE and MAE improve, 1 if either, else 0.
+
+    Returns a tensor of shape [B, P] (level='step') or [B] (level='item') with
+    values in {0, 1, 2}. Discreteness is what bounds the REINFORCE gradient
+    variance independently of dataset scale (Proposition 3).
+    """
+    r_mse = mse_reward_func(output, adjusted_output, gt, level=level)
+    r_mae = mae_reward_func(output, adjusted_output, gt, level=level)
+    return r_mse + r_mae
+
+
+def continuous_reward(output, adjusted_output, gt, level="step"):
+    """Ablation counterpart: raw improvement magnitude instead of an indicator."""
+    d_mse = _reduce_error((output - gt) ** 2, level) - _reduce_error(
+        (adjusted_output - gt) ** 2, level
     )
-    return mae_output - mae_adjusted
+    d_mae = _reduce_error(torch.abs(output - gt), level) - _reduce_error(
+        torch.abs(adjusted_output - gt), level
+    )
+    return d_mse + d_mae
 
 
 # 这个函数会导致seq_len维度发生变化，不好和mse和mae reward fn在时间步级别直接相加，item级别无影响
