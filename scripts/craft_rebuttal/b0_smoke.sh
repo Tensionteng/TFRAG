@@ -38,8 +38,12 @@ echo "### 5/5 analysis scripts"
 BASE_DIR=$(ls -dt results/*Smoke*_0 2>/dev/null | grep -v rag | head -1)
 CRAFT_DIR=$(ls -dt results/*Smoke*rag* 2>/dev/null | grep -v deploy | head -1)
 if [ -n "$BASE_DIR" ] && [ -n "$CRAFT_DIR" ]; then
-  $PY experiments/freq_band_analysis.py --base "$BASE_DIR" --craft "$CRAFT_DIR" \
-      --dataset "$NAME" --model "$MODEL" --out analysis/smoke_freq.csv
+  if [ -f "$BASE_DIR/pred.npy" ]; then
+    $PY experiments/freq_band_analysis.py --base "$BASE_DIR" --craft "$CRAFT_DIR" \
+        --dataset "$NAME" --model "$MODEL" --out analysis/smoke_freq.csv
+  else
+    echo "skipping freq analysis: SLIM=1 did not write pred.npy (expected)"
+  fi
   $PY experiments/per_example_analysis.py --base "$BASE_DIR" --craft "$CRAFT_DIR" \
       --dataset "$NAME" --model "$MODEL" --out analysis/smoke_per_example.csv
 fi
