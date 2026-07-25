@@ -50,7 +50,15 @@ DATASETS_SMALL=(
 model_args() {
   local model=$1 dataset=$2
   case "$model" in
-    iTransformer) echo "--e_layers 3 --d_layers 1 --factor 3 --d_model 512 --d_ff 512 --n_heads 8" ;;
+    iTransformer)
+      # Reference configs from this repo's own scripts/long_term_forecast/*/iTransformer.sh.
+      # Traffic uses e_layers 4 there, not 3.
+      if [ "$dataset" = "Traffic" ]; then
+        echo "--e_layers 4 --d_layers 1 --factor 3 --d_model 512 --d_ff 512 --n_heads 8"
+      else
+        echo "--e_layers 3 --d_layers 1 --factor 3 --d_model 512 --d_ff 512 --n_heads 8"
+      fi
+      ;;
     PatchTST)     echo "--e_layers 2 --d_layers 1 --factor 3 --d_model 128 --d_ff 128 --n_heads 8" ;;
     DLinear)      echo "--e_layers 2 --d_layers 1 --factor 3 --d_model 128 --d_ff 128 --n_heads 8" ;;
     TimeXer)      echo "--e_layers 2 --d_layers 1 --factor 3 --d_model 512 --d_ff 512 --n_heads 8 --patch_len 16" ;;
@@ -62,12 +70,20 @@ model_args() {
   esac
 }
 
+# Learning rates taken from this repo's reference scripts, NOT guessed. Where a
+# reference script sets no --learning_rate it inherits run.py's default of 1e-4, which
+# is the case for Weather, Exchange and the ETT family.
+#
+# This was wrong in an earlier version of this file: Weather ran at 5e-4 (5x the
+# reference) and Traffic at 5e-4 (half the reference 1e-3). A too-high LR destabilises
+# the MSE baseline, which then flatters any objective with bounded gradients -- MAE and
+# Huber appeared to beat MSE by ~20% on Weather purely for that reason. Do not change
+# these without checking the reference script.
 lr_for() {
   case "$1" in
-    ECL|Traffic) echo "0.0005" ;;
-    Weather)     echo "0.0005" ;;
-    Exchange)    echo "0.0001" ;;
-    *)           echo "0.0001" ;;
+    ECL)      echo "0.0005" ;;   # ECL_script/iTransformer.sh
+    Traffic)  echo "0.001"  ;;   # Traffic_script/iTransformer.sh
+    *)        echo "0.0001" ;;   # run.py default; Weather/Exchange/ETT reference scripts set none
   esac
 }
 
