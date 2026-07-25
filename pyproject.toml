@@ -38,6 +38,13 @@ dev = [
     "isort",
     "flake8",
 ]
+# GPU FAISS. Install with `uv sync --extra gpu` on a CUDA 12 host; it replaces the
+# faiss-cpu wheel. Retrieval is numerically identical (both are exact flat L2), so
+# this only buys speed -- but on ECL/Traffic it is the difference between a CRAFT run
+# being retrieval-bound and compute-bound.
+gpu = [
+    "faiss-gpu-cu12>=1.8.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/yourusername/srrf"
