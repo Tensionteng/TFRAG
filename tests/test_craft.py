@@ -663,6 +663,37 @@ def test_deployed_eval_record_does_not_collide_with_base(tmp_path):
     assert variant_name(A()) == "base"
 
 
+def test_custom_datasets_are_not_pooled(tmp_path):
+    """weather / traffic / electricity / exchange_rate all use --data custom.
+
+    Keying cells on `data` pooled all four into one cell and treated their seeds as
+    duplicates, silently mixing four benchmarks. Cells must key on the data file.
+    """
+    runs = str(tmp_path / "runs")
+    for name, path in [("Weather", "weather.csv"), ("Traffic", "traffic.csv")]:
+        for s in (1, 2, 3):
+            _write_run(runs, f"{name}_b{s}", "base", s, 0.20, 0.25,
+                       data="custom", data_path=path, model_id=f"{name}_96_96")
+            _write_run(runs, f"{name}_c{s}", "craft", s, 0.19, 0.24,
+                       data="custom", data_path=path, model_id=f"{name}_96_96")
+    out = str(tmp_path / "analysis")
+    r = subprocess.run(
+        [sys.executable, "experiments/aggregate_results.py", "--runs", runs, "--out", out],
+        capture_output=True, text=True,
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    )
+    assert r.returncode == 0, r.stderr
+    assert "duplicate records" not in open(os.path.join(out, "summary.md")).read()
+    import csv as _csv
+
+    with open(os.path.join(out, "per_cell.csv")) as f:
+        cells = list(_csv.DictReader(f))
+    names = {c["dataset"] for c in cells}
+    assert names == {"weather", "traffic"}, f"benchmarks collapsed: {names}"
+    for c in cells:
+        assert int(c["n_seeds"]) == 3, "seeds from two benchmarks merged into one cell"
+
+
 def test_aggregator_rejects_duplicate_seed_records(tmp_path):
     runs, out = str(tmp_path / "runs"), str(tmp_path / "analysis")
     for s in (1, 2, 3):

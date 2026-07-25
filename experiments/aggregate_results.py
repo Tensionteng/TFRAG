@@ -37,7 +37,10 @@ except ImportError:  # pragma: no cover
     HAVE_SCIPY = False
 
 # A cell is one experimental condition; runs inside a cell may differ only by seed.
-CELL_KEYS = ["data", "model", "pred_len", "variant"]
+# Keyed on `dataset`, not `data`: TSLib passes --data custom for weather,
+# exchange_rate, electricity AND traffic, so keying on `data` would pool four
+# different benchmarks into one cell and treat their seeds as duplicates.
+CELL_KEYS = ["dataset", "model", "pred_len", "variant"]
 # Everything here must match between base and treatment for a paired test to be fair.
 PROTOCOL_KEYS = [
     "seq_len", "pred_len", "train_epochs", "learning_rate", "batch_size",
@@ -66,6 +69,19 @@ def _variant_of(record):
         return stored
 
 
+def _dataset_of(cfg):
+    """Human-readable benchmark name, unique per benchmark.
+
+    `data` is the loader class selector and is 'custom' for weather, exchange_rate,
+    electricity and traffic alike, so it cannot identify the benchmark. The data file
+    stem can.
+    """
+    dp = cfg.get("data_path")
+    if dp:
+        return os.path.splitext(os.path.basename(str(dp)))[0]
+    return str(cfg.get("data"))
+
+
 def load_runs(runs_dir):
     runs = []
     for p in sorted(glob.glob(os.path.join(runs_dir, "*.json"))):
@@ -83,7 +99,12 @@ def load_runs(runs_dir):
                 "mse": float(m["mse"]),
                 "mae": float(m["mae"]),
                 "seed": cfg.get("seed"),
-                **{k: cfg.get(k) for k in set(CELL_KEYS + PROTOCOL_KEYS) - {"variant"}},
+                "dataset": _dataset_of(cfg),
+                "data": cfg.get("data"),  # loader class, kept for reference only
+                **{
+                    k: cfg.get(k)
+                    for k in set(CELL_KEYS + PROTOCOL_KEYS) - {"variant", "dataset"}
+                },
             }
         )
     if not runs:
@@ -173,7 +194,7 @@ def main():
     write_csv(
         os.path.join(args.out, "per_run.csv"),
         runs,
-        ["file", "setting", "variant", "data", "model", "pred_len", "seed", "mse", "mae"]
+        ["file", "setting", "variant", "dataset", "data", "model", "pred_len", "seed", "mse", "mae"]
         + PROTOCOL_KEYS,
     )
 
@@ -210,13 +231,13 @@ def main():
     index = defaultdict(dict)  # (data, model, pred_len) -> variant -> {seed: run}
     dup_warnings = []
     for r in runs:
-        bucket = index[(r["data"], r["model"], r["pred_len"])].setdefault(r["variant"], {})
+        bucket = index[(r["dataset"], r["model"], r["pred_len"])].setdefault(r["variant"], {})
         if r["seed"] in bucket:
             # Never overwrite: a duplicated (cell, variant, seed) means two runs are
             # claiming the same condition, and silently keeping one would fabricate
             # a clean pairing out of ambiguous data.
             dup_warnings.append(
-                f"{(r['data'], r['model'], r['pred_len'])} variant={r['variant']} "
+                f"{(r['dataset'], r['model'], r['pred_len'])} variant={r['variant']} "
                 f"seed={r['seed']}: duplicate records {bucket[r['seed']]['file']} and {r['file']}"
             )
             continue
@@ -238,7 +259,7 @@ def main():
             skipped.append(f"{key}: protocol mismatch between {args.baseline} and {args.treatment}")
             continue
 
-        row = {"data": key[0], "model": key[1], "pred_len": key[2]}
+        row = {"dataset": key[0], "model": key[1], "pred_len": key[2]}
         ok = True
         for metric in ("mse", "mae"):
             res = paired_test(base, treat, metric)
@@ -260,7 +281,7 @@ def main():
                 100.0 * (base[s]["mse"] - treat[s]["mse"]) / base[s]["mse"]
             )
 
-    fields = ["data", "model", "pred_len", "n_seeds", "seeds"]
+    fields = ["dataset", "model", "pred_len", "n_seeds", "seeds"]
     for m in ("mse", "mae"):
         fields += [
             f"{m}_base_mean", f"{m}_base_std", f"{m}_treat_mean", f"{m}_treat_std",
@@ -315,7 +336,7 @@ def main():
         ]
         by_ds = defaultdict(list)
         for r in test_rows:
-            by_ds[r["data"]].append(r["mse_delta_pct"])
+            by_ds[r["dataset"]].append(r["mse_delta_pct"])
         for ds, vals in sorted(by_ds.items()):
             v = np.array(vals)
             l, h = bootstrap_ci(v)
