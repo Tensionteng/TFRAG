@@ -49,6 +49,8 @@ def build_setting(args, ii):
             f"ret{args.retrieval_mode}",
             f"excl{args.exclusion_radius}",
         ]
+        if args.gamma_3:
+            parts.append(f"g3{args.gamma_3}{args.distill_target}")
         if args.lambda_reg:
             parts.append(f"lam{args.lambda_reg}")
         if args.detach_yhat:
@@ -398,6 +400,31 @@ if __name__ == "__main__":
     parser.add_argument("--gamma_2", type=float, default=0.5, help="weight for RL loss")
     parser.add_argument("--num_rl_samples", type=int, default=8, help="number of RL samples for policy gradient")
 
+    parser.add_argument(
+        "--gamma_3",
+        type=float,
+        default=0.0,
+        help="weight of the corrector->backbone distillation term. 0 = the "
+        "submitted method (RL term only, transfer left to zero-order channels). "
+        ">0 gives theta the corrector's accepted output as an explicit target",
+    )
+    parser.add_argument(
+        "--distill_target",
+        type=str,
+        default="best",
+        choices=["best", "advantage"],
+        help="which sampled correction to distil: the highest-reward one per "
+        "timestep, or a reward-softmax weighted mean",
+    )
+    parser.add_argument("--distill_tau", type=float, default=1.0, help="softmax temperature")
+    parser.add_argument(
+        "--distill_all",
+        action="store_true",
+        default=False,
+        help="distil every correction, including those that improved nothing "
+        "(default: only corrections with reward > 0)",
+    )
+
     # CRAFT corrector details (all previously hardcoded or missing)
     parser.add_argument(
         "--lambda_reg",
@@ -468,6 +495,13 @@ if __name__ == "__main__":
     )
     parser.add_argument("--tag", type=str, default="", help="free-form suffix for the run id")
     parser.add_argument(
+        "--skip_if_done",
+        action="store_true",
+        default=False,
+        help="exit immediately if runs/<setting>.json already exists. Makes a whole "
+        "campaign resumable: re-launching only runs what is missing",
+    )
+    parser.add_argument(
         "--detect_anomaly",
         action="store_true",
         default=False,
@@ -482,6 +516,8 @@ if __name__ == "__main__":
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
+
+    args.distill_only_positive = not args.distill_all
 
     if args.detect_anomaly:
         torch.autograd.set_detect_anomaly(True)
@@ -525,8 +561,14 @@ if __name__ == "__main__":
     if args.is_training:
         for ii in range(args.itr):
             # setting record of experiments
-            exp = Exp(args)  # set experiments
             setting = build_setting(args, ii)
+            if args.skip_if_done and os.path.exists(
+                os.path.join("runs", f"{setting}.json")
+            ):
+                print(f">>>>>>>skip (already done) : {setting}")
+                continue
+
+            exp = Exp(args)  # set experiments
 
             print(
                 ">>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>".format(setting)

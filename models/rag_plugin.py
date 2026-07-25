@@ -100,6 +100,10 @@ class RAGPlugin(nn.Module):
         self.num_samples = int(getattr(args, "num_rl_samples", 8))
         self.gamma_1 = float(getattr(args, "gamma_1", 0.5))
         self.gamma_2 = float(getattr(args, "gamma_2", 0.5))
+        self.gamma_3 = float(getattr(args, "gamma_3", 0.0))
+        self.distill_target = getattr(args, "distill_target", "best")
+        self.distill_tau = float(getattr(args, "distill_tau", 1.0))
+        self.distill_only_positive = bool(getattr(args, "distill_only_positive", True))
         self.lambda_reg = float(getattr(args, "lambda_reg", 0.0))
         self.kappa = int(getattr(args, "kappa", 3))
         self.reward_level = getattr(args, "reward_level", "step")
@@ -197,7 +201,7 @@ class RAGPlugin(nn.Module):
         state_pred = y_hat.detach() if self.detach_yhat else y_hat
         dist = self.policy_head(state_pred, y_ref)
 
-        log_probs, rewards, action_norms = [], [], []
+        log_probs, rewards, action_norms, actions = [], [], [], []
         reward_fn = discrete_reward if self.reward_type == "discrete" else continuous_reward
 
         for _ in range(self.num_samples):
@@ -222,6 +226,8 @@ class RAGPlugin(nn.Module):
                 )
             log_probs.append(log_prob)
             action_norms.append(smoothed.pow(2).sum(dim=-1).sqrt())
+            if self.gamma_3:
+                actions.append(smoothed.detach())
 
         log_probs = torch.stack(log_probs, dim=0)  # [Ns, B, P]
         rewards = torch.stack(rewards, dim=0).to(log_probs.dtype)  # [Ns, B, P]
@@ -240,9 +246,40 @@ class RAGPlugin(nn.Module):
         rl_loss = pg_loss + self.lambda_reg * reg
 
         base_loss = F.mse_loss(y_hat, batch_y)
+
+        # ---- corrector -> backbone distillation (the internalisation channel) ----
+        # The RL term alone gives theta no useful signal: its gradient pushes y_hat
+        # towards states where good actions are more *probable*, which is unrelated
+        # to y_hat being accurate. This term instead hands theta the corrector's own
+        # accepted output as a target, so what the corrector learns is transferred
+        # by first-order descent instead of hoped for via zero-order side effects.
+        distill_loss = y_hat.new_zeros(())
+        if self.gamma_3 and actions:
+            acts = torch.stack(actions, dim=0)  # [Ns, B, P, C], detached
+            R = rewards  # [Ns, B, P]
+            if self.distill_target == "best":
+                # Per timestep, the single highest-reward correction.
+                idx = R.argmax(dim=0)  # [B, P]
+                sel = idx[None, :, :, None].expand(1, -1, -1, acts.size(-1))
+                a_sel = acts.gather(0, sel).squeeze(0)
+            else:  # 'advantage': reward-softmax weighted mean of the corrections
+                w = torch.softmax(R / max(self.distill_tau, 1e-6), dim=0)
+                a_sel = (w.unsqueeze(-1) * acts).sum(dim=0)
+            if self.distill_only_positive:
+                # Only distil corrections that actually improved something; a
+                # zero-reward correction carries no information worth copying.
+                a_sel = a_sel * (R.amax(dim=0) > 0).to(a_sel.dtype).unsqueeze(-1)
+            # Target is a temporally-pooled, improvement-screened step from y_hat
+            # towards the truth -- not the raw label, so it acts as a denoised target.
+            target = (y_hat.detach() + a_sel).detach()
+            distill_loss = F.mse_loss(y_hat, target)
+
         result.update(
             {
-                "loss": self.gamma_1 * base_loss + self.gamma_2 * rl_loss,
+                "loss": self.gamma_1 * base_loss
+                + self.gamma_2 * rl_loss
+                + self.gamma_3 * distill_loss,
+                "distill_loss": distill_loss,
                 "base_loss": base_loss,
                 "rl_loss": rl_loss,
                 "pg_loss": pg_loss,

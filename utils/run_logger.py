@@ -21,7 +21,8 @@ _CONFIG_KEYS = [
     "d_ff", "factor", "embed", "distil", "dropout", "enc_in", "dec_in", "c_out",
     "batch_size", "learning_rate", "train_epochs", "patience", "lradj", "loss",
     "seed", "itr", "des", "tag", "use_amp", "inverse",
-    "use_rag", "num_retrieve", "num_rl_samples", "gamma_1", "gamma_2", "lambda_reg",
+    "use_rag", "num_retrieve", "num_rl_samples", "gamma_1", "gamma_2", "gamma_3",
+    "distill_target", "distill_tau", "distill_only_positive", "lambda_reg",
     "kappa", "reward_level", "reward_type", "rl_sampling", "detach_yhat",
     "retrieval_mode", "exclusion_radius", "policy_hidden", "policy_mode",
 ]
@@ -55,6 +56,14 @@ def variant_name(args):
         loss = str(getattr(args, "loss", "MSE")).lower()
         return "base" if loss == "mse" else f"base_{loss}"
     bits = ["craft"]
+    g3 = float(getattr(args, "gamma_3", 0.0))
+    if g3 > 0:
+        # The value belongs in the name: a gamma_3 sweep is several conditions, not
+        # one, and merging them would look like duplicate seeds. Unlike the exclusion
+        # radius, gamma_3 does not vary with pred_len, so the name stays stable.
+        bits.append(f"distill{g3:g}")
+        if getattr(args, "distill_target", "best") != "best":
+            bits.append(getattr(args, "distill_target"))
     if getattr(args, "retrieval_mode", "nn") != "nn":
         bits.append(getattr(args, "retrieval_mode"))
     if int(getattr(args, "exclusion_radius", 0)) <= 0:

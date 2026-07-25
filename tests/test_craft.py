@@ -316,6 +316,93 @@ def test_l2_penalty_increases_loss():
     assert losses[0.0][1] == 0
 
 
+def _distill_setup(**kw):
+    ds = TinyDataset()
+    args = make_args(gamma_1=0.0, gamma_2=0.0, gamma_3=1.0, detach_yhat=True, **kw)
+    m = RAGPlugin(TinyBackbone(args), args)
+    m.load_memory_bank(ds, batch_size=8)
+    m.train()
+    x = torch.stack([ds[i][0] for i in range(6)])
+    y = torch.stack([ds[i][1] for i in range(6)])[:, -P:]
+    return m, x, y
+
+
+@pytest.mark.parametrize("target", ["best", "advantage"])
+def test_distillation_produces_finite_loss_and_backbone_gradient(target):
+    torch.manual_seed(0)
+    m, x, y = _distill_setup(distill_target=target)
+    out = m(x, None, None, None, batch_y=y)
+    assert torch.isfinite(out["distill_loss"]) and out["distill_loss"] >= 0
+    out["loss"].backward()
+    g = [p.grad for p in m.base_model.parameters() if p.grad is not None]
+    assert g and any(gr.abs().sum() > 0 for gr in g), (
+        "distillation must reach the backbone; that is its whole purpose"
+    )
+
+
+def test_distillation_is_off_by_default():
+    """gamma_3=0 must reproduce the submitted method exactly."""
+    torch.manual_seed(0)
+    ds = TinyDataset()
+    args = make_args()  # gamma_3 defaults to 0
+    m = RAGPlugin(TinyBackbone(args), args)
+    m.load_memory_bank(ds, batch_size=8)
+    m.train()
+    x = torch.stack([ds[i][0] for i in range(4)])
+    y = torch.stack([ds[i][1] for i in range(4)])[:, -P:]
+    out = m(x, None, None, None, batch_y=y)
+    assert out["distill_loss"].item() == 0.0
+    expected = args.gamma_1 * out["base_loss"] + args.gamma_2 * out["rl_loss"]
+    assert torch.allclose(out["loss"], expected)
+
+
+def test_distillation_target_moves_prediction_towards_truth():
+    """The distilled target must be a step from y_hat towards batch_y, not away.
+
+    This is the property that makes the term useful rather than merely non-zero:
+    averaged over samples, the screened correction should reduce the distance to
+    the target. Verified directly on the tensors the loss is built from.
+    """
+    torch.manual_seed(0)
+    m, x, y = _distill_setup(num_rl_samples=32)
+    with torch.no_grad():
+        y_hat = m.base_model(x)
+        y_ref, _ = m._build_reference(x, None)
+        dist = m.policy_head(y_hat, y_ref)
+        acts, rews = [], []
+        for _ in range(64):
+            a = dist.sample()
+            sm = torch.nn.functional.avg_pool1d(
+                a.permute(0, 2, 1), kernel_size=3, stride=1, padding=1
+            ).permute(0, 2, 1)
+            acts.append(sm)
+            rews.append(discrete_reward(y_hat, y_hat + sm, y))
+        acts_t, rews_t = torch.stack(acts), torch.stack(rews)
+        idx = rews_t.argmax(dim=0)
+        sel = idx[None, :, :, None].expand(1, -1, -1, acts_t.size(-1))
+        a_best = acts_t.gather(0, sel).squeeze(0)
+        a_best = a_best * (rews_t.amax(0) > 0).to(a_best.dtype).unsqueeze(-1)
+
+        before = (y_hat - y).pow(2).mean()
+        after = (y_hat + a_best - y).pow(2).mean()
+    assert after < before, (
+        f"best-of-N screened correction should reduce MSE ({after:.5f} vs {before:.5f})"
+    )
+
+
+def test_only_positive_screening_zeroes_useless_corrections():
+    torch.manual_seed(0)
+    m_screen, x, y = _distill_setup(distill_only_positive=True, num_rl_samples=4)
+    torch.manual_seed(0)
+    out_screen = m_screen(x, None, None, None, batch_y=y)
+    torch.manual_seed(0)
+    m_all, x2, y2 = _distill_setup(distill_only_positive=False, num_rl_samples=4)
+    torch.manual_seed(0)
+    out_all = m_all(x2, None, None, None, batch_y=y2)
+    # Screening can only shrink the distilled correction, so its loss is <= unscreened.
+    assert out_screen["distill_loss"].item() <= out_all["distill_loss"].item() + 1e-6
+
+
 def test_extraction_round_trips_backbone_weights():
     args = make_args()
     plugin = RAGPlugin(TinyBackbone(args), args)
