@@ -129,6 +129,15 @@ class RAGPlugin(nn.Module):
                 hidden_dim=int(getattr(args, "policy_hidden", 128)),
                 mode=getattr(args, "policy_mode", "concat"),
             )
+            # A frozen policy is not a degenerate case: it is what the submitted
+            # numbers were actually produced with, because the old optimizer
+            # unwrapped the plugin and never stepped this head. Kept as an explicit
+            # condition so the "fixed random critic as regulariser" hypothesis can
+            # be tested rather than assumed.
+            self.freeze_policy = bool(getattr(args, "freeze_policy", False))
+            if self.freeze_policy:
+                for p in self.policy_head.parameters():
+                    p.requires_grad_(False)
 
     # ------------------------------------------------------------------ setup
 

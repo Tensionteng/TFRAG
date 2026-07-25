@@ -65,12 +65,25 @@ run_ds --use_rag --gamma_1 1.0 --gamma_2 0.5 --num_retrieve 5 --num_rl_samples 8
 
 # Arm 3: RL trains the corrector only, no distillation. Isolates "does removing the
 # harmful RL->theta perturbation alone recover the baseline?"
-echo "### arm 3/4: craft + detach (RL trains the corrector only)"
+echo "### arm 3/5: craft + detach (RL trains the corrector only)"
 run_ds --use_rag --gamma_1 1.0 --gamma_2 0.5 --num_retrieve 5 --num_rl_samples 8 \
        --exclusion_radius "$PL" --retrieval_mode nn --detach_yhat
 
-# Arm 4: the proposed transfer channel, over a small gamma_3 grid.
-echo "### arm 4/4: craft + distillation"
+# Arm 4: frozen policy head. This is what the submitted numbers were actually
+# produced with, because the old optimizer never stepped this head. If it recovers
+# the reported gains, the mechanism is a fixed random critic acting as a structured
+# regulariser -- which would also explain why random retrieval matched NN retrieval
+# and why the detach ablation changed nothing. Cheap to run, high information.
+echo "### arm 4/5: craft + frozen policy (reproduces the submitted configuration)"
+run_ds --use_rag --gamma_1 1.0 --gamma_2 0.5 --num_retrieve 5 --num_rl_samples 8 \
+       --exclusion_radius "$PL" --retrieval_mode nn --freeze_policy
+for G2 in 0.1 1.0; do
+  run_ds --use_rag --gamma_1 1.0 --gamma_2 "$G2" --num_retrieve 5 --num_rl_samples 8 \
+         --exclusion_radius "$PL" --retrieval_mode nn --freeze_policy --tag g2$G2
+done
+
+# Arm 5: the proposed transfer channel, over a small gamma_3 grid.
+echo "### arm 5/5: craft + distillation"
 for G3 in $G3_GRID; do
   echo "--- gamma_3=$G3 (best-of-N target)"
   run_ds --use_rag --gamma_1 1.0 --gamma_2 0.5 --num_retrieve 5 --num_rl_samples 8 \

@@ -25,6 +25,7 @@ _CONFIG_KEYS = [
     "distill_target", "distill_tau", "distill_only_positive", "lambda_reg",
     "kappa", "reward_level", "reward_type", "rl_sampling", "detach_yhat",
     "retrieval_mode", "exclusion_radius", "policy_hidden", "policy_mode",
+    "freeze_policy", "rl_sampling", "detach_yhat", "reward_level", "reward_type",
 ]
 
 
@@ -68,6 +69,8 @@ def variant_name(args):
         bits.append(getattr(args, "retrieval_mode"))
     if int(getattr(args, "exclusion_radius", 0)) <= 0:
         bits.append("noexcl")  # safeguard disabled: an ablation, not the method
+    if getattr(args, "freeze_policy", False):
+        bits.append("frozen")
     if getattr(args, "detach_yhat", False):
         bits.append("detach")
     if getattr(args, "reward_type", "discrete") != "discrete":

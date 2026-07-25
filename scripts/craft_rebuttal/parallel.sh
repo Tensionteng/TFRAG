@@ -33,9 +33,23 @@ if [ "$TOTAL" -eq 0 ]; then
   echo "queue is empty -- does the generator honour DRY_RUN?"; exit 1
 fi
 
+# CPU mode: WORKERS=n replaces the GPU list with n CPU-only workers, each pinned to
+# THREADS_PER_WORKER cores. These models are small (iTransformer over 7-21 variates),
+# so a many-core host is a perfectly usable substitute for a GPU -- and on a box whose
+# driver is broken it is the only option.
+WORKERS=${WORKERS:-0}
+THREADS_PER_WORKER=${THREADS_PER_WORKER:-6}
+if [ "$WORKERS" -gt 0 ]; then
+  GPUS=$(seq -s' ' 0 $((WORKERS - 1)))
+  export CUDA_VISIBLE_DEVICES=""
+  export OMP_NUM_THREADS=$THREADS_PER_WORKER
+  export MKL_NUM_THREADS=$THREADS_PER_WORKER
+  echo "### CPU mode: $WORKERS workers x $THREADS_PER_WORKER threads"
+fi
+
 read -r -a GPU_ARR <<< "$GPUS"
 N=${#GPU_ARR[@]}
-echo "### $TOTAL runs across $N GPU(s): ${GPUS}"
+echo "### $TOTAL runs across $N worker(s): ${GPUS}"
 echo "### est. wall clock = serial_time / $N  (round-robin sharding)"
 
 if [ "$PLAN_ONLY" = "1" ]; then

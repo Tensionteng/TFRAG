@@ -53,6 +53,8 @@ def build_setting(args, ii):
             parts.append(f"g3{args.gamma_3}{args.distill_target}")
         if args.lambda_reg:
             parts.append(f"lam{args.lambda_reg}")
+        if args.freeze_policy:
+            parts.append("frozen")
         if args.detach_yhat:
             parts.append("detach")
         if args.reward_type != "discrete":
@@ -477,6 +479,16 @@ if __name__ == "__main__":
         "1=self-exclusion, >=pred_len = no target-window overlap, "
         ">=seq_len+pred_len = no overlap at all",
     )
+    parser.add_argument(
+        "--freeze_policy",
+        action="store_true",
+        default=False,
+        help="keep the policy head at its random initialisation (never updated). "
+        "This reproduces the configuration that actually produced the submitted "
+        "numbers, since the old optimizer never stepped the policy head. As a "
+        "deliberate design it makes the corrector a fixed random critic whose RL "
+        "term acts as a structured regulariser on theta",
+    )
     parser.add_argument("--policy_hidden", type=int, default=128, help="policy hidden width")
     parser.add_argument(
         "--policy_mode", type=str, default="concat", choices=["concat", "diff"]
@@ -494,6 +506,21 @@ if __name__ == "__main__":
         help="force a CPU FAISS index even when CUDA is available",
     )
     parser.add_argument("--tag", type=str, default="", help="free-form suffix for the run id")
+    parser.add_argument(
+        "--no_save_arrays",
+        action="store_true",
+        default=False,
+        help="skip writing pred.npy/true.npy (~160 MB per Weather run). Metrics and "
+        "per-sample errors are still written. Use for large campaigns; the full "
+        "arrays are only needed by experiments/freq_band_analysis.py",
+    )
+    parser.add_argument(
+        "--slim_ckpt",
+        action="store_true",
+        default=False,
+        help="delete the full wrapper checkpoint after extracting base_model.pth, "
+        "keeping only the deployable backbone weights",
+    )
     parser.add_argument(
         "--skip_if_done",
         action="store_true",
@@ -518,6 +545,7 @@ if __name__ == "__main__":
     torch.cuda.manual_seed_all(args.seed)
 
     args.distill_only_positive = not args.distill_all
+    args.save_arrays = not args.no_save_arrays
 
     if args.detect_anomaly:
         torch.autograd.set_detect_anomaly(True)

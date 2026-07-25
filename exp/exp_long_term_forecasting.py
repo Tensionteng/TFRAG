@@ -41,7 +41,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
     def _select_optimizer(self):
         # All trainable parameters, including the policy head. Unwrapping here is
         # what previously left the corrector frozen at initialization.
-        return optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
+        params = [p for p in self.model.parameters() if p.requires_grad]
+        n_all = sum(1 for _ in self.model.parameters())
+        if len(params) != n_all:
+            print(f"[opt] {len(params)}/{n_all} parameter tensors trainable (rest frozen)")
+        return optim.Adam(params, lr=self.args.learning_rate)
 
     def _select_criterion(self):
         return build_criterion(getattr(self.args, "loss", "MSE"))
@@ -232,6 +236,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         # The deployment artifact: backbone weights with the wrapper stripped.
         torch.save(extract_base_state_dict(self.model), os.path.join(path, "base_model.pth"))
         print(f"[ckpt] backbone-only weights saved to {path}/base_model.pth")
+        if getattr(self.args, "slim_ckpt", False):
+            # The wrapper checkpoint is redundant once the backbone is extracted and
+            # the model is already loaded in memory for testing.
+            os.remove(best_model_path)
+            print("[ckpt] removed the full wrapper checkpoint (--slim_ckpt)")
         return self.model
 
     # ------------------------------------------------------------------- test
@@ -314,8 +323,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             f.write(f"mse:{mse}, mae:{mae}\n\n")
 
         np.save(os.path.join(out_dir, "metrics.npy"), np.array([mae, mse, rmse, mape, mspe]))
-        np.save(os.path.join(out_dir, "pred.npy"), preds.astype(np.float32))
-        np.save(os.path.join(out_dir, "true.npy"), trues.astype(np.float32))
+        if getattr(self.args, "save_arrays", True):
+            np.save(os.path.join(out_dir, "pred.npy"), preds.astype(np.float32))
+            np.save(os.path.join(out_dir, "true.npy"), trues.astype(np.float32))
+        else:
+            print("[io] skipped pred/true arrays (--no_save_arrays)")
         # Per-sample errors: needed for the difficulty-quartile analysis and for
         # paired tests that go below the dataset level.
         np.save(

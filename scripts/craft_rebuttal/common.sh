@@ -17,6 +17,12 @@ PATIENCE=${PATIENCE:-3}
 DES=${DES:-Rebuttal}
 LOGDIR=${LOGDIR:-logs}
 DRY_RUN=${DRY_RUN:-0}
+# Disk hygiene. pred/true arrays cost ~160 MB per Weather run and are only needed by
+# the frequency analysis; the wrapper checkpoint is redundant once base_model.pth is
+# written. SLIM=1 drops both -- necessary on a nearly full disk.
+SLIM=${SLIM:-0}
+ARTIFACT_FLAGS=""
+[ "$SLIM" = "1" ] && ARTIFACT_FLAGS="--no_save_arrays --slim_ckpt"
 
 mkdir -p "$LOGDIR" runs analysis
 
@@ -105,7 +111,7 @@ run_one() {
     --train_epochs $EPOCHS --patience $PATIENCE --lradj type1 \
     --seed $seed --des $DES --itr 1 \
     --num_workers $NUM_WORKERS --gpu $GPU \
-    $(mem_flags_for "$name") $extra"
+    $ARTIFACT_FLAGS $(mem_flags_for "$name") $extra"
 
   if [ "$DRY_RUN" = "1" ]; then
     echo "$cmd"

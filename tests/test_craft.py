@@ -316,6 +316,35 @@ def test_l2_penalty_increases_loss():
     assert losses[0.0][1] == 0
 
 
+def test_freeze_policy_keeps_head_fixed_but_still_reaches_theta():
+    """The configuration that produced the submitted numbers.
+
+    The old optimizer unwrapped the plugin, so the policy head never updated. The
+    RL term still flowed into theta through the state, making it a fixed random
+    critic acting as a regulariser. Both halves of that must hold.
+    """
+    ds = TinyDataset()
+    args = make_args(freeze_policy=True, gamma_1=0.0, gamma_2=1.0)
+    m = RAGPlugin(TinyBackbone(args), args)
+    m.load_memory_bank(ds, batch_size=8)
+    m.train()
+    assert all(not p.requires_grad for p in m.policy_head.parameters())
+
+    opt = torch.optim.Adam([p for p in m.parameters() if p.requires_grad], lr=1e-2)
+    before = m.policy_head.action_mean[0].weight.detach().clone()
+    x = torch.stack([ds[i][0] for i in range(6)])
+    y = torch.stack([ds[i][1] for i in range(6)])[:, -P:]
+    for _ in range(3):
+        opt.zero_grad()
+        m(x, None, None, None, batch_y=y)["loss"].backward()
+        opt.step()
+    assert torch.allclose(before, m.policy_head.action_mean[0].weight), "head must stay fixed"
+    g = [p.grad for p in m.base_model.parameters() if p.grad is not None]
+    assert g and any(gr.abs().sum() > 0 for gr in g), (
+        "RL term must still reach theta; that is the regularisation channel"
+    )
+
+
 def _distill_setup(**kw):
     ds = TinyDataset()
     args = make_args(gamma_1=0.0, gamma_2=0.0, gamma_3=1.0, detach_yhat=True, **kw)
