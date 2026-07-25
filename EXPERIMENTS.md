@@ -232,7 +232,8 @@ record, it does not go in.
 
 Fix these before seeing results.
 
-**D1 — aggregate gain.** If the 95% bootstrap CI on the mean MSE change excludes 0
+**D1 — aggregate gain.** Use the per-seed pooled CI when the campaign covers only a
+handful of cells; the cell-mean CI is degenerate at one cell. If the 95% CI on the mean MSE change excludes 0
 and the majority of cells have *p* < 0.05 in CRAFT's favour, the headline claim
 stands with the CI reported alongside. If the CI includes 0, the abstract must drop
 "7.23%/5.89%" and state that CRAFT is competitive with, and complementary to, tuned

@@ -198,6 +198,7 @@ def main():
         bucket[r["seed"]] = r
 
     test_rows, skipped, all_mse_deltas, all_mae_deltas = [], [], list(), list()
+    seed_deltas = []
     skipped.extend(dup_warnings)
     for key, variants in sorted(index.items(), key=lambda kv: [str(x) for x in kv[0]]):
         base, treat = variants.get(args.baseline), variants.get(args.treatment)
@@ -226,6 +227,13 @@ def main():
         test_rows.append(row)
         all_mse_deltas.append(row["mse_delta_pct"])
         all_mae_deltas.append(row["mae_delta_pct"])
+        # Per-seed deltas, pooled across cells. The cell-mean bootstrap below is
+        # degenerate when only one cell exists, so this gives a CI that still has
+        # sampling variation to work with.
+        for s in sorted(set(base) & set(treat)):
+            seed_deltas.append(
+                100.0 * (base[s]["mse"] - treat[s]["mse"]) / base[s]["mse"]
+            )
 
     fields = ["data", "model", "pred_len", "n_seeds", "seeds"]
     for m in ("mse", "mae"):
@@ -259,9 +267,15 @@ def main():
             and r["mse_p_ttest"] < 0.05
             and r["mse_delta_pct"] > 0
         )
+        slo, shi = bootstrap_ci(np.array(seed_deltas), seed=1)
         lines += [
             "## Aggregate",
-            f"- mean MSE change: **{mse_d.mean():+.2f}%** (95% bootstrap CI {lo:+.2f}% .. {hi:+.2f}%)",
+            f"- mean MSE change: **{mse_d.mean():+.2f}%** (95% bootstrap CI over "
+            f"{len(mse_d)} cell{'s' if len(mse_d) != 1 else ''} {lo:+.2f}% .. {hi:+.2f}%"
+            + ("; degenerate with a single cell -- use the per-seed CI below" if len(mse_d) < 2 else "")
+            + ")",
+            f"- mean MSE change, pooled over {len(seed_deltas)} per-seed paired deltas: "
+            f"**{np.mean(seed_deltas):+.2f}%** (95% bootstrap CI {slo:+.2f}% .. {shi:+.2f}%)",
             f"- mean MAE change: **{mae_d.mean():+.2f}%** (95% bootstrap CI {lo2:+.2f}% .. {hi2:+.2f}%)",
             f"- cells improved: {int((mse_d > 0).sum())}/{len(mse_d)}",
             f"- cells with p<0.05 (paired t, MSE): {n_sig}, of which favour {args.treatment}: {n_sig_better}",
