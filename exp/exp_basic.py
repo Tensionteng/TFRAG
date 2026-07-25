@@ -54,10 +54,20 @@ class Exp_Basic(object):
 
     def _acquire_device(self):
         if self.args.use_gpu and self.args.gpu_type == 'cuda':
-            # os.environ["CUDA_VISIBLE_DEVICES"] = str(
-            #     self.args.gpu) if not self.args.use_multi_gpu else self.args.devices
+            # Do NOT set CUDA_VISIBLE_DEVICES here. It used to be pinned to "0,1",
+            # which capped device_count() at 2 and made any --gpu 2/3 run die with
+            # "Attempting to deserialize object on CUDA device 2 but
+            # torch.cuda.device_count() is 2". Setting it after torch has initialised
+            # has no effect on device selection anyway; use the env var outside the
+            # process if you need to mask GPUs.
+            n = torch.cuda.device_count()
+            if self.args.gpu >= n:
+                raise RuntimeError(
+                    f"--gpu {self.args.gpu} requested but only {n} CUDA device(s) "
+                    f"visible. Check CUDA_VISIBLE_DEVICES."
+                )
             device = torch.device('cuda:{}'.format(self.args.gpu))
-            os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+            torch.cuda.set_device(device)
             print('Use GPU: cuda:{}'.format(self.args.gpu))
         elif self.args.use_gpu and self.args.gpu_type == 'mps':
             device = torch.device('mps')
