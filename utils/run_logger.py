@@ -69,6 +69,21 @@ def variant_name(args):
         bits.append(getattr(args, "retrieval_mode"))
     if int(getattr(args, "exclusion_radius", 0)) <= 0:
         bits.append("noexcl")  # safeguard disabled: an ablation, not the method
+    # Core hyperparameters that a sweep varies must appear in the name, or several
+    # distinct conditions collapse into one label and look like duplicated seeds.
+    # Only non-default values are appended, so the canonical condition stays "craft".
+    g2 = float(getattr(args, "gamma_2", 0.5))
+    if abs(g2 - 0.5) > 1e-12:
+        bits.append(f"g2{g2:g}")
+    k = int(getattr(args, "num_retrieve", 5))
+    if k != 5:
+        bits.append(f"k{k}")
+    ns = int(getattr(args, "num_rl_samples", 8))
+    if ns != 8:
+        bits.append(f"ns{ns}")
+    lam = float(getattr(args, "lambda_reg", 0.0))
+    if lam:
+        bits.append(f"lam{lam:g}")
     if getattr(args, "freeze_policy", False):
         bits.append("frozen")
     if getattr(args, "detach_yhat", False):

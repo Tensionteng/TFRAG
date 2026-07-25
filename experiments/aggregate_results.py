@@ -21,9 +21,13 @@ import argparse
 import glob
 import json
 import os
+import sys
 from collections import defaultdict
+from types import SimpleNamespace
 
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
     from scipy import stats
@@ -41,6 +45,27 @@ PROTOCOL_KEYS = [
 ]
 
 
+def _variant_of(record):
+    """Re-derive the variant label from the stored config.
+
+    Deliberately not trusting the string saved at run time: when the naming rules
+    are refined (e.g. to separate a gamma_2 sweep that previously collapsed into one
+    label), old records must pick up the new rules instead of silently mixing
+    several conditions under one name.
+    """
+    cfg = record.get("config") or {}
+    stored = record.get("variant", "base")
+    if "use_rag" not in cfg:
+        # Too old / too sparse to re-derive; the stored label is all we have.
+        return stored
+    try:
+        from utils.run_logger import variant_name
+
+        return variant_name(SimpleNamespace(**cfg))
+    except Exception:
+        return stored
+
+
 def load_runs(runs_dir):
     runs = []
     for p in sorted(glob.glob(os.path.join(runs_dir, "*.json"))):
@@ -54,7 +79,7 @@ def load_runs(runs_dir):
             {
                 "file": os.path.basename(p),
                 "setting": r.get("setting"),
-                "variant": r.get("variant", "base"),
+                "variant": _variant_of(r),
                 "mse": float(m["mse"]),
                 "mae": float(m["mae"]),
                 "seed": cfg.get("seed"),

@@ -580,6 +580,12 @@ def _write_run(dirpath, setting, variant, seed, mse, mae, **cfg):
         data="ETTh1", model="iTransformer", pred_len=96, seq_len=96, train_epochs=10,
         learning_rate=0.0001, batch_size=32, d_model=128, d_ff=128, e_layers=2,
         n_heads=8, lradj="type1", features="M", patience=3, seed=seed,
+        # The config must actually describe the variant: the aggregator re-derives
+        # the label from it, so a mismatched fixture would not resemble a real run.
+        loss="MSE", use_rag=(variant != "base"), gamma_2=0.5, num_retrieve=5,
+        num_rl_samples=8, exclusion_radius=96, retrieval_mode="nn",
+        reward_type="discrete", gamma_3=0.0, lambda_reg=0.0,
+        freeze_policy=False, detach_yhat=False,
     )
     base_cfg.update(cfg)
     rec = {"setting": setting, "variant": variant, "metrics": {"mse": mse, "mae": mae},
