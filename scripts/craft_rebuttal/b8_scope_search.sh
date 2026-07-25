@@ -34,12 +34,21 @@ craft_arm() { echo "--use_rag --gamma_1 1.0 --gamma_2 ${GAMMA2:-0.5} --num_retri
 # Backbones present in this repo, weakest first. RLinear/FITS/ModernTCN/GPT4TS from the
 # paper's baseline table are NOT vendored here, so they cannot be run.
 BACKBONES=${BACKBONES:-"DLinear TSMixer SegRNN FreTS PatchTST TimesNet iTransformer"}
-B8_DATASETS=(
+B8_ALL=(
   "ETTh1|./dataset/ETT-small/|ETTh1.csv|ETTh1|7"
   "ETTm2|./dataset/ETT-small/|ETTm2.csv|ETTm2|7"
   "Weather|./dataset/weather/|weather.csv|custom|21"
   "ECL|./dataset/electricity/|electricity.csv|custom|321"
 )
+# B8_ONLY="ETTh1,ETTm2" stages the grid across machines by cost (ECL on a GPU, ETT on
+# CPU) without changing the grid definition itself.
+B8_DATASETS=()
+for e in "${B8_ALL[@]}"; do
+  n="${e%%|*}"
+  if [ -z "${B8_ONLY:-}" ] || [[ ",${B8_ONLY}," == *",$n,"* ]]; then
+    B8_DATASETS+=("$e")
+  fi
+done
 HORIZONS=${HORIZONS:-"96 336"}
 
 if [ "$PHASE" = "1" ]; then
