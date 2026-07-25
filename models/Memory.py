@@ -72,12 +72,20 @@ class MemoryBankWithRetrieval:
         self.index_device = torch.device(f"cuda:{gpu_index}" if use_gpu else "cpu")
         self.store_device = torch.device("cpu") if store_on_cpu else self.index_device
 
+        if use_gpu and not hasattr(faiss, "GpuIndexFlatL2"):
+            # faiss-cpu is what pyproject.toml pins. Fall back loudly rather than
+            # aborting a multi-day campaign on its first run; retrieval is then
+            # slower but numerically identical (both are exact flat L2 indexes).
+            print(
+                "[RAG][warn] this faiss build has no GPU support (faiss-cpu); "
+                "falling back to a CPU index. Install faiss-gpu for speed."
+            )
+            use_gpu = False
+            self.use_gpu = False
+            self.index_device = torch.device("cpu")
+            self.store_device = torch.device("cpu") if store_on_cpu else self.index_device
+
         if use_gpu:
-            if not hasattr(faiss, "GpuIndexFlatL2"):
-                raise RuntimeError(
-                    "use_gpu=True but this faiss build has no GPU support. "
-                    "Install faiss-gpu or pass --memory_store_device cpu with --no_faiss_gpu."
-                )
             res = faiss.StandardGpuResources()
             res.setDefaultNullStreamAllDevices()
             config = faiss.GpuIndexFlatConfig()
