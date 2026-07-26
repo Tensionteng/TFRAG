@@ -228,10 +228,15 @@ def main():
     )
 
     # ---- paired tests ---------------------------------------------------
-    index = defaultdict(dict)  # (data, model, pred_len) -> variant -> {seed: run}
+    # Keyed on the full protocol as well: two runs differing only in learning rate
+    # would otherwise collide on (cell, variant, seed) and one would overwrite the
+    # other, silently mixing a mistuned config with its corrected rerun.
+    index = defaultdict(dict)  # (data, model, pred_len, *protocol) -> variant -> {seed: run}
     dup_warnings = []
     for r in runs:
-        bucket = index[(r["dataset"], r["model"], r["pred_len"])].setdefault(r["variant"], {})
+        bucket = index[
+            (r["dataset"], r["model"], r["pred_len"]) + protocol_of(r)
+        ].setdefault(r["variant"], {})
         if r["seed"] in bucket:
             # Never overwrite: a duplicated (cell, variant, seed) means two runs are
             # claiming the same condition, and silently keeping one would fabricate

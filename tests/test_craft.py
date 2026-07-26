@@ -845,5 +845,13 @@ def test_aggregator_skips_protocol_mismatch(tmp_path):
         cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     )
     assert r.returncode == 0, r.stderr
+    # Since the cell key now carries the full protocol, differing budgets land in
+    # separate cells and simply never meet. The invariant is the same and stronger:
+    # no paired comparison may be produced across unequal training budgets.
+    import csv as _csv
+
+    with open(os.path.join(out, "paired_tests.csv")) as f:
+        rows = list(_csv.DictReader(f))
+    assert rows == [], "unequal training budgets must never be paired"
     summary = open(os.path.join(out, "summary.md")).read()
-    assert "protocol mismatch" in summary, "unequal training budgets must not be paired"
+    assert "comparable cells: 0" in summary

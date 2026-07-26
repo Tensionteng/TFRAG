@@ -43,10 +43,16 @@ def main():
     if a.dataset:
         runs = [r for r in runs if r["dataset"] == a.dataset]
 
-    # (data, model, pred_len) -> variant -> seed -> run
+    # The cell identity must include the FULL protocol, not just dataset/model/horizon.
+    # Otherwise two runs of the same variant that differ only in learning rate collide
+    # on (cell, variant, seed) and one silently overwrites the other -- which merged
+    # the mistuned Weather runs (lr 5e-4) with their corrected reruns (lr 1e-4) and
+    # turned a real +3.8% into an apparent +20%.
     idx = defaultdict(lambda: defaultdict(dict))
     for r in runs:
-        idx[(r["dataset"], r["model"], r["pred_len"])][r["variant"]][r["seed"]] = r
+        idx[(r["dataset"], r["model"], r["pred_len"]) + protocol_of(r)][r["variant"]][
+            r["seed"]
+        ] = r
 
     rows = []
     for cell, variants in sorted(idx.items(), key=lambda kv: [str(x) for x in kv[0]]):
