@@ -44,9 +44,27 @@ for H in $HOSTS; do
   printf "  %-6s %-9s records=%-5s active=%-4s failed=%-4s disk=%-6s log=%s\n" \
     "$H" "$STATUS" "$N" "$A" "$FAILS" "$DISK" "$LOG"
 
-  # Flag disk pressure before it kills runs.
+  # Flag disk pressure before it kills runs. CLEAN=1 also reclaims checkpoints of
+  # runs that already produced a record -- those are finished and never reopened,
+  # unlike the directories of in-flight runs, which are left alone.
   case "$DISK" in
-    *K|[0-9]M|[0-9][0-9]M|[0-9][0-9][0-9]M) echo "      !! LOW DISK: $DISK" ;;
+    *K|[0-9]M|[0-9][0-9]M|[0-9][0-9][0-9]M)
+      echo "      !! LOW DISK: $DISK"
+      if [ "${CLEAN:-0}" = "1" ]; then
+        ssh -o BatchMode=yes "$H" '
+          cd ~/code/TFRAG 2>/dev/null || cd /home/tengshiyuan/code/TFRAG
+          n=0
+          for d in checkpoints/*/; do
+            s=$(basename "$d")
+            [ -f "runs/$s.json" ] && { rm -rf "$d"; n=$((n+1)); }
+          done
+          rm -rf test_results/*
+          echo "      reclaimed $n completed checkpoint dirs, now $(df -h . | tail -1 | awk "{print \$4}") free"
+        ' 2>/dev/null
+      else
+        echo "      run with CLEAN=1 to reclaim completed-run checkpoints"
+      fi
+      ;;
   esac
 
   if [ -n "$ERRS" ]; then
