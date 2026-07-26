@@ -5,6 +5,7 @@ failures that made the RAG path unrunnable, plus the semantics that the
 experiments depend on (reward shape/range, exclusion, extraction, band analysis).
 """
 
+import math
 import os
 import subprocess
 import sys
@@ -700,6 +701,24 @@ def test_new_baselines_forward_shapes(name):
     assert torch.isfinite(out).all()
     out.mean().backward()
     assert any(p.grad is not None for p in model.parameters())
+
+
+@pytest.mark.parametrize("seq_len,period_len,lpf", [(96, 24, 19), (96, 24, 1), (720, 24, 19)])
+def test_mixlinear_lpf_clamped_to_available_bins(seq_len, period_len, lpf):
+    """lpf cannot exceed seq_len/period_len frequency bins.
+
+    The authors' per-dataset lpf values (up to 19) assume their lookback of 720. At the
+    paper's lookback of 96 only 4 bins exist, and an unclamped value dies with
+    "mat1 and mat2 shapes cannot be multiplied (Nx4 and 19x2)".
+    """
+    import importlib
+
+    args = _NewBaselineArgs()
+    args.seq_len, args.period_len, args.lpf = seq_len, period_len, lpf
+    model = importlib.import_module("models.MixLinear").Model(args).float()
+    assert model.lpf <= math.ceil(seq_len / period_len)
+    out = model(torch.randn(2, seq_len, args.enc_in), None, None, None)
+    assert out.shape == (2, args.pred_len, args.enc_in) and torch.isfinite(out).all()
 
 
 @pytest.mark.parametrize("name", ["FACT", "MixLinear"])

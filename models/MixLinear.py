@@ -31,10 +31,21 @@ class Model(nn.Module):
         self.period_len = configs.period_len
 
         self.kernel = self.period_len
-        self.lpf = configs.lpf
         self.alpha = configs.alpha
 
         self.seg_num_x = math.ceil(self.seq_len / self.period_len)
+        # lpf selects low-frequency bins from an FFT over seg_num_x segments, so it
+        # cannot exceed seg_num_x. The authors' per-dataset values (up to 19) assume
+        # their lookback of 720; at lookback 96 with period_len 24 only 4 bins exist,
+        # and an unclamped value fails with "mat1 and mat2 shapes cannot be
+        # multiplied (Nx4 and 19x2)".
+        self.lpf = min(int(configs.lpf), self.seg_num_x)
+        if self.lpf != int(configs.lpf):
+            print(
+                f"[MixLinear] lpf {configs.lpf} exceeds the {self.seg_num_x} available "
+                f"frequency bins at seq_len={self.seq_len}, period_len={self.period_len}"
+                f"; clamped to {self.lpf}"
+            )
         self.seg_num_y = math.ceil(self.pred_len / self.period_len)
 
         self.sqrt_seg_num_x = math.ceil(math.sqrt(self.seq_len / self.period_len))
