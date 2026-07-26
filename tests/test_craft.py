@@ -213,6 +213,44 @@ def test_random_retrieval_differs_from_nn():
     assert not torch.allclose(y_nn, y_rand)
 
 
+def test_bank_falls_back_to_cpu_when_gpu_index_oom(monkeypatch):
+    """A GPU index too large for the card must degrade, not kill the run.
+
+    ECL/Traffic indexes are ~3 GB and do not fit on an 11 GB card beside the model;
+    FAISS then raises 'alloc fail ... out of memory'. Both index types are exact, so
+    the fallback changes speed only.
+    """
+    ds = TinyDataset()
+    b = MemoryBankWithRetrieval(seq_len=L, dim=D, pred_len=P, use_gpu=False, store_on_cpu=True)
+    b.use_gpu = True  # pretend the index is on GPU
+
+    calls = {"n": 0}
+    real_add = b._add
+
+    def flaky_add(x):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("alloc fail type FlatData dev 4 ... cudaMalloc error out of memory")
+        return real_add(x)
+
+    monkeypatch.setattr(b, "_add", flaky_add)
+    b.build_from_dataset(ds, batch_size=8)
+    assert b.use_gpu is False, "must have switched to a CPU index"
+    assert b.n_total == len(ds)
+    y, d = b.retrieve(torch.stack([ds[i][0] for i in range(3)]), k=2, mode="nn")
+    assert y.shape == (3, 2, P, D) and torch.isfinite(y).all()
+
+
+def test_bank_reraises_non_oom_errors():
+    """Only allocation failures are absorbed; real bugs must still surface."""
+    ds = TinyDataset()
+    b = MemoryBankWithRetrieval(seq_len=L, dim=D, pred_len=P, use_gpu=False, store_on_cpu=True)
+    b.use_gpu = True
+    b._add = lambda x: (_ for _ in ()).throw(RuntimeError("dimension mismatch"))
+    with pytest.raises(RuntimeError, match="dimension mismatch"):
+        b.build_from_dataset(ds, batch_size=8)
+
+
 def test_bank_rejects_shuffled_build():
     """A shuffled bank would silently break exclusion, so it must fail loudly."""
     ds = TinyDataset()

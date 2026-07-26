@@ -79,13 +79,21 @@ model_args() {
         *)       echo "--e_layers 1 --d_model 512 --d_ff 512 --core 0.5 --dilation 1 2 1 --num_kernels 4 --use_norm 1" ;;
       esac ;;
     MixLinear)
-      # period_len/lpf/alpha per the authors' *_best.sh; d_model unused by the model.
+      # alpha/lpf per the authors' *_best.sh. period_len, however, cannot be carried
+      # over unchanged: lpf selects from seq_len/period_len FFT bins, and the authors
+      # tune at lookback 720. At this table's lookback 96, period_len 24 leaves only 4
+      # bins, so their lpf=19 is impossible and clamping it would gut the frequency
+      # branch -- i.e. would under-report the baseline, the exact criticism we are
+      # answering. At L=96 we therefore use period_len 4 (24 bins), which keeps their
+      # lpf meaningful and is itself one of their own choices (weather uses 4, ETTm1 2).
+      local mp=4
+      [ "${SEQ_LEN:-96}" -ge 480 ] && mp=24     # long lookback: their original value
       case "$dataset" in
-        ETTh2)   echo "--period_len 24 --lpf 19 --alpha 0.5 --e_layers 1 --d_model 128 --d_ff 128" ;;
-        ETTm1)   echo "--period_len 2 --lpf 15 --alpha 0.01 --e_layers 1 --d_model 128 --d_ff 128" ;;
-        Weather) echo "--period_len 4 --lpf 15 --alpha 0.01 --e_layers 1 --d_model 128 --d_ff 128" ;;
-        ECL|Traffic) echo "--period_len 24 --lpf 19 --alpha 0.5 --e_layers 1 --d_model 128 --d_ff 128" ;;
-        *)       echo "--period_len 24 --lpf 1 --alpha 0.95 --e_layers 1 --d_model 128 --d_ff 128" ;;
+        ETTh2)       echo "--period_len $mp --lpf 19 --alpha 0.5 --e_layers 1 --d_model 128 --d_ff 128" ;;
+        ETTm1)       echo "--period_len 2 --lpf 15 --alpha 0.01 --e_layers 1 --d_model 128 --d_ff 128" ;;
+        Weather)     echo "--period_len 4 --lpf 15 --alpha 0.01 --e_layers 1 --d_model 128 --d_ff 128" ;;
+        ECL|Traffic) echo "--period_len $mp --lpf 19 --alpha 0.5 --e_layers 1 --d_model 128 --d_ff 128" ;;
+        *)           echo "--period_len $mp --lpf 1 --alpha 0.95 --e_layers 1 --d_model 128 --d_ff 128" ;;
       esac ;;
     *)            echo "--e_layers 2 --d_layers 1 --factor 3 --d_model 128 --d_ff 128 --n_heads 8" ;;
   esac

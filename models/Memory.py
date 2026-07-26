@@ -121,7 +121,7 @@ class MemoryBankWithRetrieval:
         self.y_store = torch.cat(ys, dim=0).to(self.store_device)
         del xs, ys
 
-        self._add(x_all)
+        self._add_with_cpu_fallback(x_all)
         del x_all
 
         self.n_total = self.index.ntotal
@@ -151,6 +151,39 @@ class MemoryBankWithRetrieval:
         self._add(x_all)
         self.n_total = self.index.ntotal
         return self
+
+    def _add_with_cpu_fallback(self, x):
+        """Populate the index, dropping to a CPU index if the GPU cannot hold it.
+
+        A flat L2 index over ECL/Traffic is ~3 GB (12k windows x 96 x 862 floats).
+        With the model also resident that does not fit on an 11 GB card, and FAISS
+        raises 'alloc fail type FlatData ... cudaMalloc error out of memory'. Both
+        index types are exact, so falling back costs speed and nothing else --
+        far better than losing the cell from the results table.
+        """
+        if not self.use_gpu:
+            self._add(x)
+            return
+        try:
+            self._add(x)
+        except (RuntimeError, MemoryError) as e:
+            msg = str(e)
+            if "out of memory" not in msg and "alloc" not in msg:
+                raise
+            need = x.numel() * 4 / 1e9
+            print(
+                f"[RAG][warn] GPU FAISS could not allocate the index (~{need:.1f} GB): "
+                f"{msg.splitlines()[0][:120]}\n"
+                f"[RAG][warn] rebuilding it on CPU; retrieval will be slower but identical."
+            )
+            self.use_gpu = False
+            self.index_device = torch.device("cpu")
+            self.index = faiss.IndexFlatL2(self.faiss_dim)
+            self.store_device = torch.device("cpu")
+            if self.y_store is not None:
+                self.y_store = self.y_store.cpu()
+            torch.cuda.empty_cache()
+            self._add(x)
 
     def _add(self, x):
         x_flat = x.reshape(x.size(0), -1).contiguous()
