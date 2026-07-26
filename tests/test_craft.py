@@ -819,6 +819,44 @@ def test_custom_datasets_are_not_pooled(tmp_path):
         assert int(c["n_seeds"]) == 3, "seeds from two benchmarks merged into one cell"
 
 
+def test_arch_knobs_are_part_of_the_protocol(tmp_path):
+    """A MixLinear base at period_len 24 must never be paired with CRAFT at 4.
+
+    period_len decides how many FFT bins the frequency branch sees (seq_len /
+    period_len). At lookback 96, 24 leaves 4 bins and clamps the authors' lpf=19
+    down to 4 -- a crippled baseline. It was absent from the protocol keys, so such
+    a run paired happily with a corrected one and the delta was meaningless.
+    """
+    runs, out = str(tmp_path / "runs"), str(tmp_path / "analysis")
+    for s in (1, 2, 3):
+        _write_run(runs, f"b{s}", "base", s, 0.40, 0.42, model="MixLinear", period_len=24)
+        _write_run(runs, f"c{s}", "craft", s, 0.38, 0.41, model="MixLinear", period_len=4)
+    r = subprocess.run(
+        [sys.executable, "experiments/aggregate_results.py", "--runs", runs, "--out", out],
+        capture_output=True, text=True,
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    )
+    assert r.returncode == 0, r.stderr
+    import csv as _csv
+
+    with open(os.path.join(out, "paired_tests.csv")) as f:
+        assert list(_csv.DictReader(f)) == [], "unequal period_len must never be paired"
+
+    # ... and the same knob on a model that does not use it must NOT split the cell.
+    runs2, out2 = str(tmp_path / "runs2"), str(tmp_path / "analysis2")
+    for s in (1, 2, 3):
+        _write_run(runs2, f"b{s}", "base", s, 0.40, 0.42, period_len=24)   # iTransformer
+        _write_run(runs2, f"c{s}", "craft", s, 0.38, 0.41, period_len=4)
+    r2 = subprocess.run(
+        [sys.executable, "experiments/aggregate_results.py", "--runs", runs2, "--out", out2],
+        capture_output=True, text=True,
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    )
+    assert r2.returncode == 0, r2.stderr
+    with open(os.path.join(out2, "paired_tests.csv")) as f:
+        assert len(list(_csv.DictReader(f))) == 1, "a MixLinear-only knob split an iTransformer cell"
+
+
 def test_aggregator_rejects_duplicate_seed_records(tmp_path):
     runs, out = str(tmp_path / "runs"), str(tmp_path / "analysis")
     for s in (1, 2, 3):

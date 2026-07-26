@@ -28,6 +28,9 @@ from types import SimpleNamespace
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.run_logger import ARCH_KEYS, arch_keys_for  # noqa: E402
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
     from scipy import stats
@@ -103,7 +106,8 @@ def load_runs(runs_dir):
                 "data": cfg.get("data"),  # loader class, kept for reference only
                 **{
                     k: cfg.get(k)
-                    for k in set(CELL_KEYS + PROTOCOL_KEYS) - {"variant", "dataset"}
+                    for k in set(CELL_KEYS + PROTOCOL_KEYS + list(ARCH_KEYS))
+                    - {"variant", "dataset"}
                 },
             }
         )
@@ -118,7 +122,15 @@ def cell_of(r):
 
 
 def protocol_of(r):
-    return tuple(r[k] for k in PROTOCOL_KEYS)
+    """Full identity of a run's configuration, minus variant and seed.
+
+    Includes the model's own architecture knobs (MixLinear's period_len, FACT's
+    core, ...). Without them two runs that differ only in, say, how many FFT bins
+    the frequency branch sees collide on (cell, variant, seed) -- which is how a
+    crippled MixLinear baseline was merged with its corrected rerun.
+    """
+    arch = tuple(r.get(k) for k in arch_keys_for(r.get("model")))
+    return tuple(r[k] for k in PROTOCOL_KEYS) + arch
 
 
 def write_csv(path, rows, fields):

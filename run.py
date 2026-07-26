@@ -8,8 +8,13 @@ from exp.exp_short_term_forecasting import Exp_Short_Term_Forecast
 from exp.exp_anomaly_detection import Exp_Anomaly_Detection
 from exp.exp_classification import Exp_Classification
 from utils.print_args import print_args
+from utils.run_logger import ARCH_KEYS, arch_keys_for
 import random
 import numpy as np
+
+# Populated from the parser once it exists, so "differs from the default" is read off
+# the single source of truth rather than a second copy that can drift from it.
+_ARG_DEFAULTS = {}
 
 
 def build_setting(args, ii):
@@ -59,9 +64,24 @@ def build_setting(args, ii):
             parts.append("detach")
         if args.reward_type != "discrete":
             parts.append(args.reward_type)
+    # Model-specific architecture knobs, appended only when they differ from the
+    # parser default so existing setting strings stay stable. Omitting them let two
+    # MixLinear configs whose frequency branch saw 4 vs 24 FFT bins share a setting
+    # string: --skip_if_done then skipped the rerun and the records overwrote.
+    for k in arch_keys_for(args.model):
+        v = getattr(args, k, None)
+        if v is not None and v != _ARG_DEFAULTS.get(k):
+            parts.append(f"{k}{_flat(v)}")
     if args.tag:
         parts.append(args.tag)
     return "_".join(str(p) for p in parts)
+
+
+def _flat(v):
+    """Filename-safe scalar rendering; lists (FACT's --dilation) become 1-2-1."""
+    if isinstance(v, (list, tuple)):
+        return "-".join(str(x) for x in v)
+    return str(v)
 
 
 if __name__ == "__main__":
@@ -558,6 +578,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    _ARG_DEFAULTS.update({k: parser.get_default(k) for k in ARCH_KEYS})
 
     # Seeding: previously fixed at 2021 regardless of --seed, which made
     # multi-seed evaluation impossible from the CLI.

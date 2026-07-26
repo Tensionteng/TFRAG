@@ -14,6 +14,37 @@ from datetime import datetime, timezone
 RUNS_DIR = "runs"
 
 # Fields that define an experimental condition; everything else is incidental.
+# Architecture knobs that change results but belong to one model only. They are
+# keyed by model on purpose: putting them in the flat protocol list would split an
+# iTransformer cell on a MixLinear-only flag and silently stop pairing runs that are
+# in fact identical.
+#
+# Leaving them out entirely is worse, and did real damage: MixLinear's period_len
+# decides how many FFT bins its frequency branch sees, so period_len 24 vs 4 at
+# lookback 96 is the difference between a crippled and a working baseline -- yet both
+# produced the same setting string, so --skip_if_done skipped the rerun and the
+# aggregator merged the two into one cell.
+ARCH_KEYS_BY_MODEL = {
+    "MixLinear": ("period_len", "lpf", "alpha"),
+    "FACT": ("core", "num_kernels", "use_norm"),
+    "SegRNN": ("seg_len",),
+    "TimesNet": ("top_k",),
+    "TimeXer": ("patch_len",),
+    "PatchTST": ("patch_len",),
+    "TimeMixer": ("down_sampling_layers", "down_sampling_method", "down_sampling_window"),
+    "DLinear": ("moving_avg",),
+}
+
+# Flattened, for the run record: recording a key the model ignores is harmless,
+# whereas failing to record one it uses is not recoverable after the fact.
+ARCH_KEYS = tuple(sorted({k for ks in ARCH_KEYS_BY_MODEL.values() for k in ks}))
+
+
+def arch_keys_for(model):
+    """Architecture knobs whose value is part of this model's protocol."""
+    return ARCH_KEYS_BY_MODEL.get(str(model), ())
+
+
 _CONFIG_KEYS = [
     "variant_override",
     "task_name", "model", "model_id", "data", "data_path", "root_path", "features",
@@ -26,7 +57,7 @@ _CONFIG_KEYS = [
     "kappa", "reward_level", "reward_type", "rl_sampling", "detach_yhat",
     "retrieval_mode", "exclusion_radius", "policy_hidden", "policy_mode",
     "freeze_policy", "rl_sampling", "detach_yhat", "reward_level", "reward_type",
-]
+] + list(ARCH_KEYS)
 
 
 def _git_commit():
