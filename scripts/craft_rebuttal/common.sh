@@ -66,6 +66,10 @@ model_args() {
     MultiPatchFormer) echo "--e_layers 2 --d_layers 1 --factor 3 --d_model 256 --d_ff 256 --n_heads 8" ;;
     TimeMixer)    echo "--e_layers 2 --d_layers 1 --factor 3 --d_model 128 --d_ff 128 --n_heads 8 --down_sampling_layers 3 --down_sampling_method avg --down_sampling_window 2" ;;
     TimesNet)     echo "--e_layers 2 --d_layers 1 --factor 3 --d_model 64 --d_ff 64 --n_heads 8 --top_k 5" ;;
+    # SegRNN reshapes to (-1, enc_in, pred_len) over pred_len/seg_len segments, so both
+    # seq_len and pred_len must be divisible by seg_len. The default 96 breaks at
+    # pred_len 336 ("shape [-1,7,336] is invalid"); 48 divides 96/192/336/720.
+    SegRNN)       echo "--e_layers 2 --d_layers 1 --d_model 512 --d_ff 512 --n_heads 8 --seg_len 48 --dropout 0.1" ;;
     # ICLR 2026 baselines, configs from the authors' own scripts (FACT/FACT.sh,
     # MixLinear/scripts/MixLinear/*.sh). Added for reviewer ErQJ's "outdated baselines".
     FACT)

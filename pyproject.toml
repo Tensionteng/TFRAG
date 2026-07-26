@@ -15,7 +15,9 @@ dependencies = [
     "faiss-cpu>=1.7.0",
     "local-attention>=1.8.0",
     "matplotlib>=3.5.0",
-    "numpy>=1.22.0,<2.0.0",
+    # NumPy 2 is required by the faiss-gpu-cu12 wheels; the only 2.0 incompatibility
+    # in this tree was np.Inf in utils/tools.py, now np.inf (valid on 1.x and 2.x).
+    "numpy>=1.22.0",
     "pandas>=1.4.0",
     "patool>=1.12",
     "reformer-pytorch>=1.4.0",

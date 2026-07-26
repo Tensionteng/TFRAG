@@ -1461,7 +1461,7 @@ requires-dist = [
     { name = "isort", marker = "extra == 'dev'" },
     { name = "local-attention", specifier = ">=1.8.0" },
     { name = "matplotlib", specifier = ">=3.5.0" },
-    { name = "numpy", specifier = ">=1.22.0,<2.0.0" },
+    { name = "numpy", specifier = ">=1.22.0" },
     { name = "pandas", specifier = ">=1.4.0" },
     { name = "patool", specifier = ">=1.12" },
     { name = "pyarrow", specifier = ">=14.0.0" },
