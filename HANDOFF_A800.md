@@ -14,10 +14,12 @@ reproduce it.
 **Goal:** find a configuration of the paper's method (retrieval + RL corrector, applied
 at training time only) that beats strong baselines with statistical significance.
 
-**Current status:** across **716 run records / ~30 distinct configurations**, no
+**Current status:** across **731 run records / ~34 distinct configurations**, no
 configuration of the method beats its own paired baseline at p<0.05. The best is
 `craft_distill5_g20.1_ns16_detach` on ETTh1: **+0.85%, p=0.303**. Meanwhile a one-line
 loss-function change (MAE, FreDF) achieves +1.9% to +8.1% at p<0.01 on the same cells.
+At its best-tuned setting on the two 2026 backbones the corrector's mean effect over 8
+paired cells is **+0.01%** (§6.6) — zero, not a weak positive.
 
 You are not being asked to confirm this. You are being asked to make a genuine attempt
 at the remaining untested directions (§7) with far more compute than was available.
@@ -265,19 +267,47 @@ Longer lookback is *worse* at this budget. At L=720, CRAFT beats base (+0.84%, p
 but both are worse than L=96 base. If you want long-lookback numbers to be competitive
 you must also raise the epoch budget — untested.
 
-### 6.6 Modern backbones: γ₂ was genuinely mistuned, but tuning only reaches neutral
+### 6.6 Modern backbones (b11, complete): γ₂ was genuinely mistuned, and tuning reaches exactly neutral
+
+200 runs, FACT and MixLinear on the four ETT datasets, **unified lookback 96**, 5 paired
+seeds per cell, base and CRAFT differing only in the corrector.
+
+Aggregated over cells:
+
+| arm | cells | mean Δ% | positive | significantly positive |
+|---|---|---|---|---|
+| `craft` (default γ₂=0.5) | 12 | **−7.45** | 1/12 | 0 |
+| `craft_g20.1` (live policy) | 8 | −1.33 | 1/8 | 0 |
+| `craft_g20.05_frozen` | 8 | −0.39 | 1/8 | 0 |
+| **`craft_g20.1_frozen`** | 8 | **+0.01** | 3/8 | 0 |
+
+Per cell, the two extremes:
 
 | backbone | dataset | γ₂=0.5 (default) | γ₂=0.1 frozen |
 |---|---|---|---|
 | FACT | ETTh1 | **−28.14%** (p=.062) | +0.22% (p=.838) |
-| FACT | ETTh2 | −8.27% (p=.027) | −0.16% |
-| FACT | ETTm1 | −11.96% | −0.41% |
-| MixLinear | ETTm1 | −8.29% (p=.018) | −0.18% |
+| FACT | ETTh2 | **−8.27%** (p=.027) | −0.16% |
+| FACT | ETTm1 | −18.70% | −0.41% |
+| FACT | ETTm2 | −23.30% (p=.069) | +0.15% |
 | MixLinear | ETTh1 | −0.45% | **+0.74%** (p=.263) |
 | MixLinear | ETTh2 | −0.80% | −0.14% |
+| MixLinear | ETTm1 | **−8.29%** (p=.018) | −0.18% |
+| MixLinear | ETTm2 | −0.18% | −0.14% |
 
-Worth stating in the paper: the catastrophic numbers were an untuned-strength artifact.
-The honest claim is "neutral when tuned, harmful when not", not "destroys the backbone".
+Two conclusions, both worth stating in the paper:
+
+1. The catastrophic numbers are an **untuned-strength artifact**, not a property of the
+   backbones. The defensible claim is "harmful at the default strength, neutral when
+   tuned" — which is both more accurate and less damaging than "destroys modern backbones".
+2. At its best tuning the corrector's mean effect is **+0.01% over 8 cells**. This is not
+   a weak positive; it is zero to three significant figures, and it is the cleanest
+   statement of the §1 argument in the whole dataset.
+
+**Trap noted for MixLinear.** Forcing `period_len 4` at lookback 96 (to keep the authors'
+`lpf=19` from being clamped) makes their model *worse* on ETTh1: 0.4004 → 0.4589. ETTh1
+takes the `lpf=1` branch, so `period_len` only alters the time-domain reshaping there, and
+24 suits it better. Report MixLinear per-dataset at its best config rather than imposing
+one; its own operating point is lookback 720 (ETTh1 0.3640, ETTh2 0.2834, Weather 0.1729).
 
 ### 6.7 What DOES beat the baseline (these are existing published methods, not ours)
 
